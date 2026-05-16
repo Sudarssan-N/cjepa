@@ -1,0 +1,4 @@
+name: cnn
+freeze: false
+image_size: 64
+patch_size: 8

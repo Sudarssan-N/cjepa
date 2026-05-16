@@ -1,0 +1,4 @@
+name: dinov2
+freeze: false               # central hypothesis: end-to-end DINOv2 + slots
+image_size: 224
+patch_size: 14

@@ -1,0 +1,4 @@
+name: dinov2
+freeze: true                # C-JEPA-style baseline
+image_size: 224
+patch_size: 14              # informational; DINOv2 uses 14 internally

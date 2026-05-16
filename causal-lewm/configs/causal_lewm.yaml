@@ -1,0 +1,43 @@
+# Causal-LeWM training config — mirrors le-wm/config/train/lewm.yaml
+# but adds object-centric (slot) settings.
+
+defaults:
+  - _self_
+  - data: pusht
+  - encoder: cnn
+
+seed: 3072
+output_dir: outputs/${now:%Y-%m-%d_%H-%M-%S}
+
+# Optimization
+steps: 5000
+batch_size: 32
+lr: 3e-4
+weight_decay: 1e-4
+grad_clip: 1.0
+log_every: 25
+save_every: 1000
+device: cuda                # auto-falls-back to cpu in train.py
+num_workers: 4
+
+# Model — keys map 1:1 to CausalLeWMConfig fields
+model:
+  encoder_name: ${encoder.name}
+  encoder_freeze: ${encoder.freeze}
+  image_size: ${encoder.image_size}
+  patch_size: ${encoder.patch_size}
+  dim: 192                  # matches LeWM's wm.embed_dim default
+  num_slots: 7
+  slot_iters: 3
+  num_frames: ${data.num_steps}
+  future_frames: ${data.num_preds}
+  action_dim: 2
+  pred_depth: 4
+  pred_heads: 8
+  pred_dim_head: 32
+  pred_mlp_dim: 768
+  lambda_sig: 0.09          # SIGReg weight from LeWM (loss.sigreg.weight)
+  lambda_div: 0.1
+  mask_target: 0.4
+  warmup_steps: 500
+  ramp_steps: 1500

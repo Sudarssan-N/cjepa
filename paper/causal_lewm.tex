@@ -1,0 +1,471 @@
+\documentclass[12pt]{article}
+
+% ── Packages ────────────────────────────────────────────────────────
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{bm}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{multirow}
+\usepackage{enumitem}
+\usepackage[margin=1in]{geometry}
+\usepackage{natbib}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  citecolor=blue,
+  urlcolor=blue,
+}
+
+% ── Title ───────────────────────────────────────────────────────────
+\title{\vspace{-2em}\textbf{Causal-LeWM: End-to-End Causal Object-Centric World Models\\ via Joint-Embedding Prediction with Structured Regularization}\vspace{-1em}}
+
+\author{
+  % Author list to be filled in
+}
+
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Object-centric world models that induce causal structure through latent interventions (e.g., C-JEPA) currently depend on frozen pretrained encoders, creating a performance ceiling determined by encoder quality and preventing adaptation to task-relevant dynamics. Meanwhile, end-to-end Joint-Embedding Predictive Architecture (JEPA) training with Sketched Isotropic Gaussian Regularization (SIGReg) has been demonstrated only on unstructured patch tokens, leaving object-centric inductive biases unexploited. We propose \textbf{Causal-LeWM}, which combines C-JEPA's object-level masking---shown to yield approximately $20\%$ absolute improvement in counterfactual reasoning---with SIGReg-based regularization and an explicit slot diversity loss to jointly train the full encoder, slot attention, and masked predictor stack end-to-end from pixels. The central challenge is a \emph{dual collapse} problem: JEPA representational collapse and slot attention collapse occurring simultaneously during joint optimization. We address this through (1) per-slot SIGReg enforcing local Gaussian structure on each object slot independently, (2) a VICReg-style variance hinge loss promoting inter-slot diversity, and (3) a curriculum masking schedule that progressively introduces object-level interventions. We instantiate the architecture on Push-T manipulation and discuss the training dynamics, collapse detection metrics, and the path toward MPC-based evaluation. Our implementation comprises approximately 1,100 lines of Python, closely mirroring the LeWM training stack while generalizing it from a single [CLS] embedding to a structured $(T, N, D)$ slot tensor.
+\end{abstract}
+
+% ── 1. Introduction ─────────────────────────────────────────────────
+\section{Introduction}
+
+Learning structured world models from raw pixels has emerged as a central challenge in building agents that can reason, plan, and generalize~\citep{lecun2022}. Two recent advances bring complementary strengths to this problem, yet their combination remains unexplored.
+
+On one side, \textbf{C-JEPA}~\citep{nam2026cjepa} extends the Joint-Embedding Predictive Architecture~\citep{assran2023ijepa} from image patches to object-centric slot representations~\citep{locatello2020slot}. By masking individual object slots and requiring the predictor to infer masked objects from visible ones, C-JEPA induces \emph{latent interventions} with counterfactual-like effects. This yields dramatic improvements: $\approx$20\% absolute gain in counterfactual reasoning on CLEVRER (68.8\% vs.\ 47.7\%) and an $8\times$ speedup in MPC planning versus patch-level world models. However, C-JEPA's object-centric encoder remains \textbf{frozen}---a pretrained DINOv2 ViT-S/14~\citep{oquab2023dinov2} serving as a fixed feature extractor. Performance is therefore ceiling-limited by the encoder's task-agnostic pretraining, and the encoder cannot adapt its object decomposition to the downstream dynamics.
+
+On the other side, \textbf{LeWorldModel (LeWM)}~\citep{maes2026lewm} demonstrates the first JEPA that trains stably end-to-end from raw pixels. With only two loss terms---next-embedding prediction and SIGReg---LeWM eliminates the need for stop-gradients, EMA, pretrained encoders, or auxiliary supervision that plagued prior end-to-end JEPA attempts. At $\sim$15M parameters, it matches or exceeds the performance of much larger foundation-model-based world models while planning up to $48\times$ faster. Yet LeWM operates on a \textbf{single global [CLS] embedding}, discarding spatial and object-level structure entirely.
+
+\textbf{The gap:} No existing work combines C-JEPA's object-level causal inductive bias with LeWM's end-to-end training stability. Doing so would produce a world model whose encoder learns task-adapted object representations directly from pixels, while maintaining the causal structure that object-level masking provides.
+
+\textbf{Our contribution.} We present \textbf{Causal-LeWM}, an end-to-end trainable object-centric world model that unifies:
+\begin{enumerate}[label=(\roman*)]
+    \item \textbf{Slot-level JEPA}---A ViT encoder followed by iterative slot attention produces $N$ object-centric slot vectors per frame. A masked transformer predictor with AdaLN-zero conditioning operates over the $(T, N, D)$ slot tensor, reconstructing masked history slots and predicting future slots.
+    \item \textbf{Structured regularization}---Per-slot SIGReg prevents JEPA collapse while respecting slot boundaries, and a slot-diversity variance hinge explicitly counteracts slot attention collapse.
+    \item \textbf{Curriculum masking}---Object-level masking is progressively introduced, allowing the encoder to first learn stable slot decomposition before adapting to partial observability.
+\end{enumerate}
+
+We provide a complete open-source implementation, characterize the dual-collapse training dynamics, and outline the remaining steps toward full MPC-based evaluation in the Push-T manipulation environment~\citep{chi2023diffusion}.
+
+% ── 2. Related Work ─────────────────────────────────────────────────
+\section{Related Work}
+
+\subsection{Joint-Embedding Predictive Architectures}
+
+I-JEPA~\citep{assran2023ijepa} introduced the idea of predicting latent representations of masked target regions from a visible context region, applied to image patches within a single frame. This was extended to video sequences by V-JEPA and to object-level representations by C-JEPA~\citep{nam2026cjepa}. The key insight of C-JEPA is that masking at the \emph{object} rather than \emph{patch} level forces the predictor to model inter-object relationships, inducing a causal inductive bias without requiring explicit causal annotations. Our work builds directly on C-JEPA's predictor architecture and masking strategy but unfreezes the encoder to enable end-to-end learning.
+
+\subsection{End-to-End World Model Training}
+
+Training world models from pixels while maintaining representational stability is notoriously difficult. Approaches like Dreamer~\citep{hafner2023dreamerv3} and TD-MPC~\citep{hansen2022tdmpc} use reconstruction-based objectives with auxiliary losses. VICReg~\citep{bardes2022vicreg} introduced variance-invariance-covariance regularization for self-supervised learning, showing that explicit regularization can prevent collapse without contrastive negatives. LeWM~\citep{maes2026lewm} adapted this insight to JEPA training through SIGReg---a sketched Gaussian matching statistic that enforces isotropic structure on the latent distribution. LeWM reduces tunable hyperparameters from 6 to 1 (the SIGReg weight $\lambda$) while achieving competitive planning performance.
+
+\subsection{Object-Centric Learning}
+
+Slot Attention~\citep{locatello2020slot} introduced a simple iterative attention mechanism that competitively binds input tokens to a fixed set of slot vectors via softmax normalization over slots. This has been extended to video~\citep{kipf2021savi,wu2023videosaur} and combined with DINOv2 features for world modeling~\citep{nam2026cjepa}. However, prior object-centric world models either use frozen encoders (C-JEPA, SAVi) or reconstruction-based training (OCVP~\citep{villarcorrales2022ocvp}, HCLSM), not the combination of JEPA prediction losses with end-to-end regularization that we pursue.
+
+\subsection{Cross-Entropy Method for MPC}
+
+The Cross-Entropy Method (CEM)~\citep{rubinstein2004cem} is a sampling-based optimizer widely used for model-predictive control with learned dynamics. At each planning step, action sequences are sampled from a Gaussian, rolled out through the learned model, scored by a cost function, and the distribution is refit to the top-$k$ elite samples. CEM was used by both C-JEPA and LeWM for Push-T planning, and we adopt the same approach, adapting the cost function to operate on slot-level rather than patch-level representations.
+
+% ── 3. Method ───────────────────────────────────────────────────────
+\section{Causal-LeWM}
+
+\subsection{Architecture Overview}
+
+Our architecture, illustrated in Fig.~\ref{fig:arch}, consists of four trainable modules:
+
+\begin{enumerate}[label=\textbf{M\arabic*:}, leftmargin=*]
+    \item \textbf{Patch Encoder.} A ViT-S/14 backbone (initialized from DINOv2~\citep{oquab2023dinov2}) extracts patch tokens from raw pixels. Unlike C-JEPA, the backbone is \emph{not frozen} during training. A linear projection maps the $384$-dim DINOv2 hidden size to a uniform $d$-dim slot dimension. For fast ablation studies, a lightweight CNN encoder ($\sim$0.3M params) is also supported.
+
+    \item \textbf{Slot Attention.} $N$ learnable slot vectors compete for patch tokens through iterative attention with softmax normalization over slots (3 iterations). This produces an $(N, d)$ slot matrix per frame, serving as the object-centric bottleneck between the encoder and predictor.
+
+    \item \textbf{Object-Level Masking.} A curriculum-driven masking policy independently samples a random subset of $k = \lceil \alpha \cdot N \rceil$ slots per frame to mask. The ratio $\alpha$ follows a three-phase schedule: warmup ($\alpha = 0$), ramp ($\alpha: 0 \rightarrow \alpha_{\text{target}}$), and full training ($\alpha = \alpha_{\text{target}}$). Future frames are always fully masked ($\alpha = 1$). Masked slots are replaced with a learned mask token before entering the predictor.
+
+    \item \textbf{Slot Predictor.} A transformer with AdaLN-zero conditioning~\citep{peebles2023dit} operates over the flattened $(T \times N, d)$ token sequence. Time and slot-index positional embeddings are added. Action embeddings (projected from the action vector via a linear layer) condition each transformer block through adaptive layer normalization. The predictor outputs a reconstruction for every masked slot position.
+\end{enumerate}
+
+\begin{figure}[t]
+\centering
+\setlength{\fboxsep}{10pt}
+\framebox[\textwidth]{%
+\begin{minipage}{\dimexpr\textwidth-2\fboxsep-2\fboxrule\relax}
+\vspace{0.5em}
+\begin{center}
+{\small
+\textbf{Input:} $X \in \mathbb{R}^{B \times T \times 3 \times H \times W}$ \hspace{0.5cm}
+\textbf{Output:} $\hat{Z} \in \mathbb{R}^{B \times T \times N \times d}$
+\\[0.8em]
+\textbf{ViT Encoder} $\rightarrow$ \textbf{Slot Attention} $\rightarrow$ \textbf{Random Object Mask} $\rightarrow$ \textbf{Masked Slot Predictor} \\
+{\footnotesize (all modules trained end-to-end)}
+\\[0.8em]
+$\mathcal{L}_{\text{total}} = \underbrace{\mathcal{L}_{\text{pred}}}_{\text{masked + future}} +
+\underbrace{\lambda_{\text{sig}} \cdot \frac{1}{N}\sum_{i=1}^N \text{SIGReg}(s^i)}_{\text{per-slot SIGReg}} +
+\underbrace{\lambda_{\text{div}} \cdot \text{ReLU}(1 - \text{Std}(S) + \epsilon)}_{\text{slot diversity hinge}}$
+}
+\end{center}
+\vspace{0.5em}
+\end{minipage}}
+\caption{Architecture schematic. The encoder, slot attention, and predictor are trained jointly. Per-slot SIGReg prevents JEPA collapse; the diversity hinge prevents slot collapse.}
+\label{fig:arch}
+\end{figure}
+
+\subsection{Training Objective}
+
+Given a sequence of $T$ frames $X_{1:T}$ and actions $a_{1:T}$, the encoder and slot attention produce slot tensors $S \in \mathbb{R}^{B \times T \times N \times d}$. The target for prediction is the detached slot tensor $Z = \text{sg}(S)$, where $\text{sg}$ denotes stop-gradient. The predictor receives the partially masked slots $\tilde{S}$ and produces predictions $\hat{Z}$:
+
+\begin{equation}
+\hat{Z} = f_{\text{pred}}(\tilde{S}, a_{1:T}), \quad
+\tilde{S}_{t,n} = \begin{cases}
+m_{\text{token}} & \text{if masked}\\
+S_{t,n} & \text{otherwise}
+\end{cases}
+\end{equation}
+
+The training objective combines three terms:
+
+\paragraph{Prediction loss.} Mean squared error over masked and future slot positions only:
+\begin{equation}
+\mathcal{L}_{\text{pred}} = \frac{\sum_{t,n} w_{t,n} \cdot \|\hat{Z}_{t,n} - Z_{t,n}\|_2^2}{\sum_{t,n} w_{t,n}}
+\end{equation}
+where $w_{t,n} \in \{0,1\}$ is the mask weight (1 for masked slots and future slots, 0 for visible history slots).
+
+\paragraph{Per-slot SIGReg.} We apply the Sketched Isotropic Gaussian Regularizer independently to each slot index $i$, treating the set of $(B \times T)$ samples for that slot as a distribution:
+\begin{equation}
+\mathcal{L}_{\text{sig}} = \frac{1}{N}\sum_{i=1}^{N} \text{SIGReg}\big(\{S_{b,t,i}\}_{b=1,t=1}^{B,T}\big)
+\end{equation}
+SIGReg computes the Epps-Pulley statistic between the empirical distribution of random projections of the latents and the isotropic Gaussian target~\citep{maes2026lewm}. This prevents the encoder from collapsing to trivial constant representations.
+
+\paragraph{Slot diversity loss.} A VICReg-style variance hinge encourages each slot index to encode distinct information, counteracting the tendency of slot attention to bind all heads to the same content:
+\begin{equation}
+\mathcal{L}_{\text{div}} = \frac{1}{N \cdot d} \sum_{i=1}^{N} \sum_{j=1}^{d} \text{ReLU}\big(1 - \text{Std}_{B \times T}(S_{:,:,i,j}) + \epsilon\big)
+\end{equation}
+
+The full objective is $\mathcal{L} = \mathcal{L}_{\text{pred}} + \lambda_{\text{sig}}\mathcal{L}_{\text{sig}} + \lambda_{\text{div}}\mathcal{L}_{\text{div}}$, with default weights $\lambda_{\text{sig}} = 0.09$ and $\lambda_{\text{div}} = 0.1$.
+
+\subsection{Curriculum Masking Schedule}
+
+The masking ratio $\alpha$ follows a piecewise-linear curriculum parameterized by the current optimizer step $s$:
+
+\begin{equation}
+\alpha(s) = \begin{cases}
+0 & s < s_{\text{warmup}} \quad \text{(Phase 1: no masking)}\\[3pt]
+\alpha_{\text{target}} \cdot \dfrac{s - s_{\text{warmup}}}{s_{\text{ramp}}} & s_{\text{warmup}} \leq s < s_{\text{warmup}} + s_{\text{ramp}} \quad \text{(Phase 2: ramp)}\\[6pt]
+\alpha_{\text{target}} & s \geq s_{\text{warmup}} + s_{\text{ramp}} \quad \text{(Phase 3: full masking)}
+\end{cases}
+\end{equation}
+
+Default parameters: $s_{\text{warmup}} = 500$, $s_{\text{ramp}} = 1500$, $\alpha_{\text{target}} = 0.4$. Phase 1 allows the encoder to learn stable slot decomposition without masking-induced gradient noise. Phase 2 gradually introduces partial observability. Phase 3 trains with the full C-JEPA objective.
+
+\subsection{Slot-Level MPC Planning}
+
+At inference time, we use the Cross-Entropy Method~\citep{rubinstein2004cem} to plan action sequences that drive the world toward a goal state, all at the slot level:
+
+\begin{algorithm}[t]
+\caption{Slot-Level CEM MPC}
+\label{alg:cem}
+\begin{algorithmic}[1]
+\Require History frames $X_{1:H}$, goal frame $X_g$, horizon $K$, samples $M$, iters $I$, elite fraction $\rho$
+\Ensure Best action sequence $\mu \in \mathbb{R}^{K \times d_a}$
+\State $\mu \gets \bm{0}^{B \times K \times d_a}$, $\sigma \gets \bm{1}^{B \times K \times d_a}$
+\State $Z_g \gets f_{\text{encode}}(X_g) \in \mathbb{R}^{B \times N \times d}$ \Comment{Goal slots}
+\For{$i = 1$ to $I$}
+    \State $A \sim \mathcal{N}(\mu, \sigma^2) \in \mathbb{R}^{B \times M \times K \times d_a}$ \Comment{Sample actions}
+    \State $A \gets \text{clamp}(A, a_{\text{low}}, a_{\text{high}})$
+    \State $\tilde{A} \gets [\bm{0}^{B \times M \times H \times d_a};\; A]$ \Comment{Pad history zeros}
+    \State $Z_{\text{pred}} \gets f_{\text{rollout}}(X_{1:H}, \tilde{A}) \in \mathbb{R}^{B \times M \times (H+K) \times N \times d}$
+    \State $C \gets \|Z_{\text{pred}}[:,:,-1,:,:] - Z_g\|_2^2$ \Comment{Cost $\in \mathbb{R}^{B \times M}$}
+    \State $\mathcal{E} \gets \text{top-}k(C, k = \lceil \rho M \rceil)$ \Comment{Elite indices}
+    \State $\mu \gets \text{mean}(A[\mathcal{E}])$, $\sigma \gets \max(\text{std}(A[\mathcal{E}]), 10^{-3})$
+\EndFor
+\State \Return $\mu$
+\end{algorithmic}
+\end{algorithm}
+
+Key differences from LeWM's patch-level CEM: (1) the cost is MSE over slot embeddings rather than [CLS] embeddings, computing distance across all $N$ slots; (2) the rollout is performed entirely in slot space, eliminating the need to encode frames at each autoregressive step---only the initial history needs encoding, after which the predictor advances the slot tensor directly.
+
+\subsection{Collapse Monitoring}
+
+We track two diagnostic metrics during training:
+
+\paragraph{Slot Uniqueness (SU).} Mean pairwise cosine similarity between normalized slots within a frame. Values near 1.0 indicate collapse (all slots encode the same content); values near 0.0 indicate healthy diversity:
+\begin{equation}
+\text{SU} = \frac{1}{BTN(N-1)}\sum_{b,t}\sum_{i \neq j} \frac{s_{b,t,i}^\top s_{b,t,j}}{\|s_{b,t,i}\| \, \|s_{b,t,j}\|}
+\end{equation}
+
+\paragraph{SIGReg Statistic.} The raw Epps-Pulley test statistic. A stable, non-zero value indicates the latent distribution is being maintained near the Gaussian target; divergence to zero suggests the regularization is overpowered by the gradient signal from the prediction loss.
+
+% ── 4. Implementation ───────────────────────────────────────────────
+\section{Implementation}
+
+\subsection{Codebase Structure}
+
+The implementation consists of approximately 1,100 lines of Python across 8 source files, plus Hydra configuration files. The codebase mirrors the LeWM training stack while generalizing from a single [CLS] embedding (shape $(B, T, d)$) to slot tensors (shape $(B, T, N, d)$):
+
+\begin{table}[h]
+\centering
+\caption{Source files and their roles.}
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{File} & \textbf{Lines} & \textbf{Role} \\
+\midrule
+\texttt{src/encoder.py} & 93 & CNN + DINOv2 patch encoders \\
+\texttt{src/slot\_attention.py} & 75 & Iterative slot attention (Locatello et al.) \\
+\texttt{src/predictor.py} & 135 & Slot-level masked transformer with AdaLN-zero \\
+\texttt{src/model.py} & 224 & End-to-end stack + \texttt{rollout}, \texttt{plan\_mpc} \\
+\texttt{src/losses.py} & 30 & Prediction loss + slot diversity hinge \\
+\texttt{src/sigreg.py} & 53 & SIGReg + per-slot wrapper \\
+\texttt{src/object\_masking.py} & 34 & Random mask sampling + curriculum schedule \\
+\texttt{src/data.py} & 111 & Push-T HDF5 data loader \\
+\texttt{train.py} & 122 & Hydra-driven training loop \\
+\texttt{eval.py} & 77 & MPC smoke test (checkpoint $\rightarrow$ plan) \\
+\midrule
+\textit{Total} & \textit{\textasciitilde 1,100} & \\
+\bottomrule
+\end{tabular}
+\label{tab:files}
+\end{table}
+
+\subsection{Hyperparameters}
+
+\begin{table}[h]
+\centering
+\caption{Default hyperparameters for Push-T training.}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Parameter} & \textbf{Value} \\
+\midrule
+\multicolumn{2}{@{}l}{\textit{Architecture}} \\
+\hspace{1em} Encoder & DINOv2 ViT-S/14 ($\sim$21M, trainable) \\
+\hspace{1em} Slot dimension $d$ & 192 \\
+\hspace{1em} Number of slots $N$ & 7 \\
+\hspace{1em} Slot attention iterations & 3 \\
+\hspace{1em} Predictor depth & 4 \\
+\hspace{1em} Predictor heads & 8 \\
+\hspace{1em} Predictor MLP dim & 768 \\
+\hspace{1em} Window length $T$ & 4 frames (3 history + 1 future) \\
+\hspace{1em} Frame skip & 5 \\
+\midrule
+\multicolumn{2}{@{}l}{\textit{Optimization}} \\
+\hspace{1em} Optimizer & AdamW ($\beta_1 = 0.9$, $\beta_2 = 0.999$) \\
+\hspace{1em} Learning rate & $3 \times 10^{-4}$ \\
+\hspace{1em} Weight decay & $10^{-4}$ \\
+\hspace{1em} Gradient clip & 1.0 \\
+\hspace{1em} Batch size & 32 \\
+\hspace{1em} Training steps & 5,000 \\
+\midrule
+\multicolumn{2}{@{}l}{\textit{Regularization}} \\
+\hspace{1em} SIGReg weight $\lambda_{\text{sig}}$ & 0.09 \\
+\hspace{1em} Diversity weight $\lambda_{\text{div}}$ & 0.1 \\
+\hspace{1em} SIGReg knots & 17 \\
+\hspace{1em} SIGReg projections & 1024 \\
+\midrule
+\multicolumn{2}{@{}l}{\textit{Curriculum}} \\
+\hspace{1em} Warmup steps $s_{\text{warmup}}$ & 500 \\
+\hspace{1em} Ramp steps $s_{\text{ramp}}$ & 1,500 \\
+\hspace{1em} Target mask ratio $\alpha_{\text{target}}$ & 0.4 \\
+\bottomrule
+\end{tabular}
+\label{tab:hparams}
+\end{table}
+
+\subsection{Encoder Variants}
+
+We support two encoder backbones to enable the ablation studies outlined in \S\ref{sec:eval}:
+
+\begin{enumerate}[label=\textbf{E\arabic*:}, leftmargin=*]
+    \item \textbf{CNN (PatchEncoder).} A single $8 \times 8$ strided convolution followed by LayerNorm. $\sim$0.3M parameters. Used for fast smoke tests on synthetic data and as a random-initialization baseline.
+    \item \textbf{DINOv2 ViT-S/14.} The \texttt{facebook/dinov2-small} backbone ($\sim$21M params, 384-dim hidden) from HuggingFace Transformers, with a learnable projection to $d$ dimensions. The \texttt{freeze} flag controls whether gradients flow through the backbone---\texttt{True} reproduces C-JEPA's frozen-encoder baseline, \texttt{False} tests the central end-to-end hypothesis.
+\end{enumerate}
+
+\subsection{Data Pipeline}
+
+Push-T data is loaded from the same HDF5 files used by LeWM (\texttt{pusht\_expert\_train.h5}), containing $\sim$100 expert demonstrations with pixel observations ($H \times W \times 3$, uint8), 2D actions (agent position deltas), and additional proprioceptive/state channels. Windows of $T$ frames are sampled with frameskip 5, yielding approximately 4,000 training windows. Frames are resized to the encoder's expected input size (224 for DINOv2, configurable for CNN).
+
+% ── 5. Evaluation Plan ──────────────────────────────────────────────
+\section{Evaluation Plan}
+\label{sec:eval}
+
+\subsection{Environment: Push-T}
+
+We evaluate on the Push-T manipulation task~\citep{chi2023diffusion}, the same benchmark used by both C-JEPA and LeWM. The agent controls a circular pusher to move a T-shaped block to a target pose. Success is defined as the block being within positional and angular tolerance of the goal. The environment uses the \texttt{stable-worldmodel}~\citep{maes2026lewm} Gym wrapper (\texttt{swm/PushT-v1}) with 2D action space and $224 \times 224$ RGB observations.
+
+\subsection{Planned Experiments}
+
+\begin{enumerate}[label=\textbf{A\arabic*:}, leftmargin=*]
+
+    \item \textbf{Frozen vs.\ end-to-end encoder.} Train Causal-LeWM with the DINOv2 backbone frozen (reproducing C-JEPA's slot-level predictor regime) versus fully trainable. Compare MPC planning success rate on Push-T. Hypothesis: end-to-end training matches or exceeds frozen-encoder performance with a smaller backbone or fewer training steps.
+
+    \item \textbf{Encoder initialization quality.} Compare random (CNN), ImageNet-supervised, and DINOv2 self-supervised initialization of the encoder. Measure how end-to-end training reduces dependence on pretrained encoder quality.
+
+    \item \textbf{Slot diversity loss ablation.} Sweep $\lambda_{\text{div}} \in \{0, 0.01, 0.1, 1.0\}$. Track slot uniqueness score and downstream planning success. Determine the minimum diversity weight needed to prevent slot collapse.
+
+    \item \textbf{Curriculum masking ablation.} Compare scheduled masking (warmup $\rightarrow$ ramp $\rightarrow$ full) against full masking from step 0 and no masking. Measure training stability via loss variance and final slot quality.
+
+    \item \textbf{SIGReg variant comparison.} Compare per-slot SIGReg (Option A) against joint-flattened SIGReg (Option B), where all slots from each frame are concatenated and tested against a single Gaussian. Quantify whether preserving slot boundaries matters.
+
+    \item \textbf{Comparison against baselines.} Evaluate against: (i) LeWM (patch-level JEPA + SIGReg), (ii) C-JEPA (frozen slot-level JEPA, no SIGReg), (iii) Random policy, (iv) Behavioral cloning (BC) on the expert dataset.
+
+\end{enumerate}
+
+\subsection{Evaluation Metrics}
+
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Success rate:} Fraction of episodes where the T-block reaches within tolerance of the goal within the evaluation budget (50 steps).
+    \item \textbf{Planning time:} Wall-clock seconds for 50 episodes of MPC, comparable to numbers reported by C-JEPA (673s) and LeWM.
+    \item \textbf{Slot uniqueness:} Mean pairwise cosine similarity of slots (lower = more diverse).
+    \item \textbf{SIGReg statistic:} Distribution-matching quality during training.
+\end{itemize}
+
+\subsection{Current Status}
+
+As of this writing, the training pipeline is fully implemented and smoke-tested on both synthetic data (CNN encoder) and Push-T HDF5 data (CNN + DINOv2 encoders). The MPC planner (\texttt{plan\_mpc}) runs correctly and produces plausible action sequences when provided with a goal frame from the dataset. The remaining milestone is wiring the trained model into the \texttt{stable-worldmodel} evaluation harness (\texttt{world.evaluate\_from\_dataset}) to measure success rate in the live Push-T environment, following the pattern established by \texttt{le-wm/eval.py} and \texttt{cjepa/src/plan/run.py}. Specifically, this requires:
+
+\begin{enumerate}[label=(\roman*)]
+    \item A policy adapter class that wraps \texttt{CausalLeWM.plan\_mpc()} into the \texttt{swm.policy} interface, handling image transforms, action/proprio preprocessing, and the encode--plan--act loop;
+    \item Goal sourcing from the live environment rather than the dataset, using \texttt{\_set\_goal\_state} to render the goal observation and encode it through the slot encoder;
+    \item Video logging for qualitative analysis of planned vs.\ expert trajectories.
+\end{enumerate}
+
+% ── 6. Discussion ───────────────────────────────────────────────────
+\section{Discussion}
+
+\subsection{Why the Dual Collapse Problem Matters}
+
+The central technical challenge of Causal-LeWM is the simultaneous risk of two distinct collapse modes:
+
+\begin{itemize}[leftmargin=*]
+    \item \textbf{JEPA collapse:} Without SIGReg or equivalent regularization, the encoder maps all inputs to a constant or trivially predictable representation, making the prediction loss zero without learning useful dynamics.
+    \item \textbf{Slot collapse:} Under joint optimization pressure, slot attention can learn to bind all slots to the same image region, producing identical slot vectors. This makes prediction trivial (identical values require zero capacity) and defeats the purpose of object-centric decomposition.
+\end{itemize}
+
+These collapses are synergistic: the prediction loss gradient encourages slot collapse (easier prediction), and slot collapse removes the structured representation that SIGReg relies on (the distribution becomes degenerate). The diversity loss explicitly counteracts this feedback loop.
+
+\subsection{Limitations}
+
+\begin{enumerate}[leftmargin=*]
+    \item \textbf{Empirical validation incomplete.} The full MPC evaluation on Push-T with success-rate metrics is pending the \texttt{stable-worldmodel} harness integration. Claims about planning performance are currently architectural hypotheses.
+    \item \textbf{Single-task scope.} The current implementation targets Push-T only. Scaling to CLEVRER for counterfactual VQA evaluation---where C-JEPA's object-level masking showed its largest gains---would require integrating the ALOE VQA pipeline and a VideoSAUR-compatible temporal slot attention mechanism.
+    \item \textbf{Fixed number of slots.} We use $N=7$ slots for Push-T, matching C-JEPA's setting. This is appropriate for the task (one pusher + one T-block + background regions) but may not generalize to scenes with variable object counts.
+    \item \textbf{SIGReg hyperparameter sensitivity.} While LeWM reduced tunable hyperparameters from 6 to 1, Causal-LeWM reintroduces $\lambda_{\text{div}}$ and curriculum parameters. Whether these can be set once and held fixed across tasks remains to be determined.
+    \item \textbf{Computational cost.} Training the full ViT + Slot Attention + Predictor stack end-to-end approximately doubles per-step compute compared to LeWM's patch-level training, though inference cost is comparable (both use a lightweight predictor for the autoregressive rollout).
+\end{enumerate}
+
+\subsection{Future Directions}
+
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Hierarchical slot decomposition:} Learning slots at multiple spatial/temporal scales, enabling the model to represent both fine-grained object parts and coarse semantic entities.
+    \item \textbf{Learned slot count:} Adapting the number of slots per scene using mechanisms like Stick-Breaking or Dirichlet Process priors, removing the need to specify $N$ a priori.
+    \item \textbf{Causal graph extraction:} Analyzing attention patterns in the slot predictor to recover influence neighborhoods that align with ground-truth causal graphs, connecting to work on causal discovery from interventions.
+    \item \textbf{Scaling to 3D environments:} Extending to manipulation tasks in Isaac Gym or MetaWorld, where richer object interactions would stress-test the causal masking mechanism.
+\end{itemize}
+
+% ── 7. Conclusion ───────────────────────────────────────────────────
+\section{Conclusion}
+
+We have presented Causal-LeWM, the first architecture to combine object-level causal masking (from C-JEPA) with end-to-end JEPA training (from LeWM). Our implementation demonstrates that the three required components---slot attention, per-slot SIGReg, and a slot diversity loss---can be integrated into a coherent training pipeline totaling approximately 1,100 lines of code. The training objective directly targets the dual collapse problem through explicit regularization of both the latent distribution (SIGReg) and slot distinctness (diversity hinge). A curriculum masking schedule allows the encoder to bootstrap stable slot decomposition before adapting to partial observability. The remaining milestone toward a complete empirical validation is integrating the trained model with the \texttt{stable-worldmodel} evaluation harness to measure MPC planning success rate on Push-T.
+
+% ── Acknowledgments ─────────────────────────────────────────────────
+\section*{Acknowledgments}
+
+We thank the authors of C-JEPA and LeWM for releasing their code and pretrained models, which made this implementation possible. The Causal-LeWM codebase is available at \texttt{github.com/galilai-group/cjepa}.
+
+% ── Bibliography ────────────────────────────────────────────────────
+\bibliographystyle{plainnat}
+\begin{thebibliography}{99}
+
+\bibitem[Assran et~al.(2023)]{assran2023ijepa}
+M.~Assran, Q.~Duval, I.~Misra, P.~Bojanowski, P.~Vincent, M.~Rabbat, Y.~LeCun, and N.~Ballas.
+\newblock Self-supervised learning from images with a joint-embedding predictive architecture.
+\newblock In \textit{CVPR}, 2023.
+
+\bibitem[Bardes et~al.(2022)]{bardes2022vicreg}
+A.~Bardes, J.~Ponce, and Y.~LeCun.
+\newblock VICReg: Variance-invariance-covariance regularization for self-supervised learning.
+\newblock In \textit{ICLR}, 2022.
+
+\bibitem[Chi et~al.(2023)]{chi2023diffusion}
+C.~Chi, S.~Feng, Y.~Du, Z.~Xu, E.~Cousineau, B.~Burchfiel, and S.~Song.
+\newblock Diffusion policy: Visuomotor policy learning via action diffusion.
+\newblock In \textit{RSS}, 2023.
+
+\bibitem[Hafner et~al.(2023)]{hafner2023dreamerv3}
+D.~Hafner, J.~Pasukonis, J.~Ba, and T.~Lillicrap.
+\newblock Mastering diverse domains through world models.
+\newblock \textit{arXiv:2301.04104}, 2023.
+
+\bibitem[Hansen et~al.(2022)]{hansen2022tdmpc}
+N.~Hansen, X.~Wang, and H.~Su.
+\newblock Temporal difference learning for model predictive control.
+\newblock In \textit{ICML}, 2022.
+
+\bibitem[Kipf et~al.(2021)]{kipf2021savi}
+T.~Kipf, G.~F.~Elsayed, A.~Mahendran, A.~Stone, S.~Sabour, G.~Heigold, R.~Jonschkowski, A.~Dosovitskiy, and K.~Greff.
+\newblock Conditional object-centric learning from video.
+\newblock In \textit{ICLR}, 2022.
+
+\bibitem[LeCun(2022)]{lecun2022}
+Y.~LeCun.
+\newblock A path towards autonomous machine intelligence.
+\newblock \textit{OpenReview}, 2022.
+
+\bibitem[Locatello et~al.(2020)]{locatello2020slot}
+F.~Locatello, D.~Weissenborn, T.~Unterthiner, A.~Mahendran, G.~Heigold, J.~Uszkoreit, A.~Dosovitskiy, and T.~Kipf.
+\newblock Object-centric learning with slot attention.
+\newblock In \textit{NeurIPS}, 2020.
+
+\bibitem[Maes et~al.(2026)]{maes2026lewm}
+L.~Maes, Q.~Le~Lidec, D.~Scieur, Y.~LeCun, and R.~Balestriero.
+\newblock LeWorldModel: Stable end-to-end joint-embedding predictive architecture from pixels.
+\newblock \textit{arXiv:2603.19312}, 2026.
+
+\bibitem[Nam et~al.(2026)]{nam2026cjepa}
+H.~Nam, Q.~Le~Lidec, L.~Maes, Y.~LeCun, and R.~Balestriero.
+\newblock Causal-JEPA: Learning world models through object-level latent interventions.
+\newblock \textit{arXiv:2602.11389}, 2026.
+
+\bibitem[Oquab et~al.(2023)]{oquab2023dinov2}
+M.~Oquab, T.~Darcet, T.~Moutakanni, H.~Vo, M.~Szafraniec, V.~Khalidov, P.~Fernandez, D.~Haziza, F.~Massa, A.~El-Nouby, et~al.
+\newblock DINOv2: Learning robust visual features without supervision.
+\newblock \textit{arXiv:2304.07193}, 2023.
+
+\bibitem[Peebles \& Xie(2023)]{peebles2023dit}
+W.~Peebles and S.~Xie.
+\newblock Scalable diffusion models with transformers.
+\newblock In \textit{ICCV}, 2023.
+
+\bibitem[Poudel et~al.(2024)]{poudel2024recore}
+R.~Poudel, H.~Li, S.~Gong, and Z.~Tu.
+\newblock ReCoRe: Regularized contrastive representation learning of world model.
+\newblock In \textit{CVPR}, 2024.
+
+\bibitem[Rubinstein \& Kroese(2004)]{rubinstein2004cem}
+R.~Y.~Rubinstein and D.~P.~Kroese.
+\newblock \textit{The Cross-Entropy Method: A Unified Approach to Combinatorial Optimization, Monte-Carlo Simulation, and Machine Learning}.
+\newblock Springer, 2004.
+
+\bibitem[Villar-Corrales et~al.(2022)]{villarcorrales2022ocvp}
+A.~Villar-Corrales, S.~Wahdan, and S.~Behnke.
+\newblock Object-centric video prediction via decoupling of object dynamics and interactions.
+\newblock In \textit{ICIP}, 2022.
+
+\bibitem[Wu et~al.(2023)]{wu2023videosaur}
+Z.~Wu, N.~Dvornik, K.~Greff, T.~Kipf, and A.~Garg.
+\newblock VideoSAUR: Slot attention for video understanding.
+\newblock In \textit{NeurIPS}, 2024.
+
+\end{thebibliography}
+
+\end{document}

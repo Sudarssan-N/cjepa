@@ -1,0 +1,8 @@
+name: pusht_expert_train
+type: hdf5                  # "hdf5" or "synthetic"
+num_steps: 4                # T (history + future)
+num_preds: 1                # last `num_preds` frames are future (always masked)
+frameskip: 5
+keys_to_load:
+  - pixels
+  - action

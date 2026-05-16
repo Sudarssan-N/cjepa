@@ -1,0 +1,9 @@
+name: synthetic
+type: synthetic
+num_steps: 8
+num_preds: 1
+frameskip: 1
+num_objects: 3
+keys_to_load:
+  - pixels
+  - action
