@@ -78,12 +78,12 @@ class PushTHDF5(Dataset):
         path: str | None = None,
     ):
         self.path = Path(path) if path else _stablewm_home() / f"{name}.h5"
-        if not self.path.exists():
+        if self.path.suffix == ".zst":
+            self.path = _decompress_zst(self.path)
+        elif not self.path.exists():
             zst = self.path.with_suffix(self.path.suffix + ".zst")
-            if self.path.suffix != ".zst" and zst.exists():
+            if zst.exists():
                 self.path = _decompress_zst(zst)
-            elif self.path.suffix == ".zst":
-                self.path = _decompress_zst(self.path)
             else:
                 raise FileNotFoundError(
                     f"{self.path} not found. Run scripts/download_pusht.sh, "
