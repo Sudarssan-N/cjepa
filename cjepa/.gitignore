@@ -26,6 +26,7 @@ wandb/
 **/requirements_frozen_*.txt
 */launch.json
 **.txt
+!requirements.txt
 **.csv
 **collision*.pt
 data/OBJ3D

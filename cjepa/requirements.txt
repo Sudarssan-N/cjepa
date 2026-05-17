@@ -1,0 +1,57 @@
+# Core ML / PyTorch
+torch>=2.1
+torchvision
+torchmetrics
+einops>=0.7
+timm
+
+# Config management
+hydra-core>=1.3
+omegaconf>=2.3
+
+# HuggingFace
+transformers>=4.40
+accelerate
+
+# Training / logging
+lightning>=2.0
+pytorch-lightning>=2.0
+tensorboard
+tensorboardX
+wandb
+loguru
+
+# Data / video
+h5py>=3.10
+webdataset
+torchcodec
+av
+imageio
+opencv-python
+pycocotools
+hickle
+
+# Scientific computing
+numpy
+scipy
+scikit-learn
+pandas
+matplotlib
+seaborn
+lpips
+
+# Utilities
+Pillow
+tqdm
+requests
+gdown
+wget
+pytest
+
+# Optional: TensorFlow datasets (only needed for certain dataset pipelines)
+# tensorflow-datasets
+
+# Note: install these third-party libs from source (see docs/ENV.md):
+#   src/third_party/stable-pretraining  (galilai-group/stable-pretraining @ 92b5841)
+#   src/third_party/stable-worldmodel   (galilai-group/stable-worldmodel  @ 221ac82)
+#   src/third_party/nerv                (Wuziyi616/nerv                   @ v0.1.0)
