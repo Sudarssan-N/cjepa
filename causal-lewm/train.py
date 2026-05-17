@@ -40,6 +40,7 @@ def build_dataset(cfg: DictConfig):
             frameskip=cfg.data.frameskip,
             image_size=cfg.encoder.image_size,
             keys_to_load=tuple(cfg.data.keys_to_load),
+            path=cfg.data.get("path", None),
         )
     raise ValueError(f"Unknown data.type={cfg.data.type}")
 

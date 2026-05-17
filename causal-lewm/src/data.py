@@ -18,6 +18,8 @@ upstream LeWM HDF5 even if minor field names differ.
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import Sequence
 
@@ -29,6 +31,30 @@ from torch.utils.data import Dataset
 
 def _stablewm_home() -> Path:
     return Path(os.environ.get("STABLEWM_HOME", str(Path.home() / ".stable-wm")))
+
+
+def _decompress_zst(src: Path) -> Path:
+    """Decompress src (.h5.zst) → src without the .zst suffix, return the .h5 path."""
+    dst = src.with_suffix("")  # strips .zst → .h5
+    if dst.exists():
+        return dst
+    print(f"Decompressing {src} → {dst} (one-time, ~2–5 min for 13 GB) …", flush=True)
+    try:
+        import zstandard as zstd  # type: ignore
+        with src.open("rb") as fin, dst.open("wb") as fout:
+            dctx = zstd.ZstdDecompressor()
+            dctx.copy_stream(fin, fout)
+    except ImportError:
+        # fall back to the zstd CLI if the Python library isn't installed
+        result = subprocess.run(["zstd", "-d", str(src), "-o", str(dst)], check=False)
+        if result.returncode != 0:
+            dst.unlink(missing_ok=True)
+            sys.exit(
+                "zstd decompression failed. Install via: pip install zstandard  "
+                "or: conda install -c conda-forge zstd"
+            )
+    print(f"Decompression complete → {dst}", flush=True)
+    return dst
 
 
 class PushTHDF5(Dataset):
@@ -53,10 +79,17 @@ class PushTHDF5(Dataset):
     ):
         self.path = Path(path) if path else _stablewm_home() / f"{name}.h5"
         if not self.path.exists():
-            raise FileNotFoundError(
-                f"{self.path} not found. Run scripts/download_pusht.sh "
-                f"or set STABLEWM_HOME to where the .h5 lives."
-            )
+            zst = self.path.with_suffix(self.path.suffix + ".zst")
+            if self.path.suffix != ".zst" and zst.exists():
+                self.path = _decompress_zst(zst)
+            elif self.path.suffix == ".zst":
+                self.path = _decompress_zst(self.path)
+            else:
+                raise FileNotFoundError(
+                    f"{self.path} not found. Run scripts/download_pusht.sh, "
+                    f"set STABLEWM_HOME to where the .h5 lives, "
+                    f"or pass data.path=/path/to/pusht_expert_train.h5.zst"
+                )
         self.num_steps = num_steps
         self.frameskip = frameskip
         self.image_size = image_size

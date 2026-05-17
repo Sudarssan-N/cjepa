@@ -6,3 +6,6 @@ frameskip: 5
 keys_to_load:
   - pixels
   - action
+# Override the default STABLEWM_HOME/<name>.h5 path.
+# Accepts plain .h5 or .h5.zst (auto-decompressed on first use).
+path: null
