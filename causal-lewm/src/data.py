@@ -5,14 +5,22 @@ LeWM's `swm.data.HDF5Dataset` is a thin wrapper that returns dicts with
 pieces Causal-LeWM needs so this repo doesn't require installing
 `stable-worldmodel` for a first end-to-end run on Push-T.
 
-File layout (Push-T expert):
-  episode_<i>/pixels   (T, H, W, 3) uint8
-  episode_<i>/action   (T, action_dim) float32
-  episode_<i>/proprio  (T, proprio_dim) float32
-  episode_<i>/state    (T, state_dim) float32
+Two layouts are auto-detected at open time:
 
-The exact key names are read at open time so this works for the
-upstream LeWM HDF5 even if minor field names differ.
+  (a) Episode-grouped (one HDF5 Group per episode):
+        episode_<i>/pixels   (T, H, W, 3) uint8
+        episode_<i>/action   (T, action_dim) float32
+        episode_<i>/proprio  (T, proprio_dim) float32
+        episode_<i>/state    (T, state_dim) float32
+
+  (b) Flat (stable-worldmodel layout: top-level Datasets, all episodes concatenated):
+        pixels   (N_total, H, W, 3) uint8
+        action   (N_total, action_dim) float32
+        proprio  (N_total, proprio_dim) float32
+        state    (N_total, state_dim) float32
+        # plus one of: episode_index (per-frame ep id) or
+        # episode_starts/episode_ends/episode_lengths (per-episode offsets).
+        # If none of these are present, the file is treated as one episode.
 """
 
 from __future__ import annotations
@@ -95,22 +103,107 @@ class PushTHDF5(Dataset):
         self.image_size = image_size
         self.keys_to_load = list(keys_to_load)
 
-        # Build (episode_key, start_frame) index of valid windows.
+        # Build the window index. Each entry is (episode_offset, length, start_within_episode).
+        # For grouped layout, episode_offset is the group key; for flat, it's the absolute
+        # frame offset into the global `pixels` dataset.
         self._h5: h5py.File | None = None
-        self._index: list[tuple[str, int]] = []
-        with h5py.File(self.path, "r") as f:
-            ep_keys = sorted(k for k in f.keys() if k.startswith("episode"))
-            if not ep_keys:
-                ep_keys = sorted(f.keys())  # fall back: top-level groups are episodes
-            self._episode_keys = ep_keys
+        self._index: list[tuple] = []
+        span = (num_steps - 1) * frameskip + 1
 
-            for ek in ep_keys:
-                grp = f[ek]
-                pix_key = "pixels" if "pixels" in grp else next(iter(grp.keys()))
-                T = grp[pix_key].shape[0]
-                span = (num_steps - 1) * frameskip + 1
-                for s in range(0, T - span + 1, frameskip):
-                    self._index.append((ek, s))
+        with h5py.File(self.path, "r") as f:
+            top_keys = sorted(f.keys())
+            if not top_keys:
+                raise RuntimeError(f"{self.path} has no top-level keys")
+            first = f[top_keys[0]]
+
+            if isinstance(first, h5py.Group):
+                # ---- Layout (a): one Group per episode ----
+                self._layout = "grouped"
+                ep_keys = [k for k in top_keys if k.startswith("episode")] or top_keys
+                self._episode_keys = ep_keys
+                for ek in ep_keys:
+                    grp = f[ek]
+                    pix_key = "pixels" if "pixels" in grp else next(iter(grp.keys()))
+                    T = grp[pix_key].shape[0]
+                    for s in range(0, T - span + 1, frameskip):
+                        self._index.append((ek, s))
+            else:
+                # ---- Layout (b): flat top-level Datasets ----
+                self._layout = "flat"
+                if "pixels" not in f:
+                    raise KeyError(
+                        f"{self.path} is flat but has no 'pixels' dataset; "
+                        f"top-level keys: {top_keys}"
+                    )
+                pixels_ds = f["pixels"]
+                if pixels_ds.ndim == 5:
+                    # (E, T, H, W, C): per-episode along axis 0
+                    E, T = pixels_ds.shape[:2]
+                    self._flat_shape = "5d"
+                    self._episode_keys = [f"ep{e}" for e in range(E)]
+                    for e in range(E):
+                        for s in range(0, T - span + 1, frameskip):
+                            # absolute frame index into the flattened view
+                            self._index.append((e * T + s, s))
+                    self._ep_len = T
+                elif pixels_ds.ndim == 4:
+                    # (N_total, H, W, C): need episode boundaries
+                    N = pixels_ds.shape[0]
+                    self._flat_shape = "4d"
+                    starts, ends = self._infer_episode_bounds(f, N)
+                    self._episode_keys = [f"ep{i}" for i in range(len(starts))]
+                    self._ep_bounds = list(zip(starts, ends))
+                    for s0, e0 in self._ep_bounds:
+                        T_ep = e0 - s0
+                        for s in range(0, T_ep - span + 1, frameskip):
+                            self._index.append((s0 + s,))
+                else:
+                    raise ValueError(
+                        f"Unexpected pixels ndim={pixels_ds.ndim} (shape {pixels_ds.shape})"
+                    )
+
+        if not self._index:
+            raise RuntimeError(
+                f"No valid windows in {self.path}: num_steps={num_steps}, "
+                f"frameskip={frameskip} require at least {span} frames per episode."
+            )
+
+    @staticmethod
+    def _infer_episode_bounds(f: h5py.File, N: int) -> tuple[list[int], list[int]]:
+        """Return (starts, ends) for each episode given a flat HDF5 file with N frames."""
+        # Per-frame episode id
+        for key in ("episode_index", "episode_ids", "episode_id", "ep_index", "ep_id"):
+            if key in f:
+                ep_ids = np.asarray(f[key][:])
+                if ep_ids.shape[0] != N:
+                    continue
+                starts: list[int] = [0]
+                for i in range(1, N):
+                    if ep_ids[i] != ep_ids[i - 1]:
+                        starts.append(i)
+                ends = starts[1:] + [N]
+                return starts, ends
+        # Explicit start/end arrays
+        if "episode_starts" in f and "episode_ends" in f:
+            return list(map(int, f["episode_starts"][:])), list(map(int, f["episode_ends"][:]))
+        if "episode_starts" in f:
+            s = list(map(int, f["episode_starts"][:]))
+            return s, s[1:] + [N]
+        # Per-episode lengths
+        for key in ("episode_lengths", "episode_length", "ep_lengths"):
+            if key in f:
+                lens = list(map(int, f[key][:]))
+                starts = np.cumsum([0] + lens[:-1]).tolist()
+                ends = np.cumsum(lens).tolist()
+                return starts, ends
+        # Fallback: one long episode
+        print(
+            "[PushTHDF5] No episode-boundary dataset found; treating the whole file "
+            "as a single episode. Available top-level keys: "
+            f"{sorted(f.keys())}",
+            flush=True,
+        )
+        return [0], [N]
 
     def __len__(self):
         return len(self._index)
@@ -121,24 +214,45 @@ class PushTHDF5(Dataset):
             self._h5 = h5py.File(self.path, "r", swmr=True)
         return self._h5
 
-    def __getitem__(self, idx: int):
-        ek, start = self._index[idx]
-        f = self._open()
-        grp = f[ek]
-        idxs = [start + i * self.frameskip for i in range(self.num_steps)]
+    def _read_window(self, f: h5py.File, idx_entry: tuple) -> tuple[np.ndarray, np.ndarray]:
+        """Return (pixels[T,H,W,C], action[T,A]) for the window at idx_entry."""
+        if self._layout == "grouped":
+            ek, start = idx_entry
+            grp = f[ek]
+            idxs = [start + i * self.frameskip for i in range(self.num_steps)]
+            return grp["pixels"][idxs], np.asarray(grp["action"][idxs], dtype=np.float32)
 
-        pixels = grp["pixels"][idxs]                    # (T, H, W, 3) uint8 typically
+        # flat
+        if self._flat_shape == "5d":
+            abs_start, s = idx_entry
+            e = abs_start // self._ep_len
+            idxs = [s + i * self.frameskip for i in range(self.num_steps)]
+            pix = f["pixels"][e, idxs]
+            act = np.asarray(f["action"][e, idxs], dtype=np.float32)
+            return pix, act
+
+        # flat 4d
+        (abs_start,) = idx_entry
+        idxs = [abs_start + i * self.frameskip for i in range(self.num_steps)]
+        pix = f["pixels"][idxs]
+        act = np.asarray(f["action"][idxs], dtype=np.float32)
+        return pix, act
+
+    def __getitem__(self, idx: int):
+        f = self._open()
+        pixels, action = self._read_window(f, self._index[idx])
+
         if pixels.dtype != np.uint8:
             pixels = (pixels * 255).clip(0, 255).astype(np.uint8) if pixels.max() <= 1 else pixels.astype(np.uint8)
 
-        # to (T, 3, H, W) float in [0,1] then resize via simple nearest if needed
+        # to (T, 3, H, W) float in [0,1] then resize via simple bilinear if needed
         x = torch.from_numpy(pixels).permute(0, 3, 1, 2).float() / 255.0
         if x.shape[-1] != self.image_size or x.shape[-2] != self.image_size:
             x = torch.nn.functional.interpolate(
                 x, size=(self.image_size, self.image_size), mode="bilinear", align_corners=False
             )
 
-        action = torch.from_numpy(np.asarray(grp["action"][idxs], dtype=np.float32))
+        action = torch.from_numpy(action)
         action = torch.nan_to_num(action, 0.0)
 
         return x, action
