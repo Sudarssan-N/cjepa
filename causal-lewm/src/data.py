@@ -32,6 +32,16 @@ from pathlib import Path
 from typing import Sequence
 
 import h5py
+
+# Registers Blosc/LZ4/Zstd/etc. HDF5 codec plugins. The LeWM/stable-worldmodel
+# Push-T files chunk-compress `pixels` with one of these filters; without the
+# plugin, reads fail with "Can't synchronously read data (can't open directory
+# .../plugin)". Imported at module level so DataLoader workers register it too.
+try:
+    import hdf5plugin  # noqa: F401
+except ImportError:
+    pass
+
 import numpy as np
 import torch
 from torch.utils.data import Dataset
@@ -171,18 +181,11 @@ class PushTHDF5(Dataset):
     @staticmethod
     def _infer_episode_bounds(f: h5py.File, N: int) -> tuple[list[int], list[int]]:
         """Return (starts, ends) for each episode given a flat HDF5 file with N frames."""
-        # Per-frame episode id
-        for key in ("episode_index", "episode_ids", "episode_id", "ep_index", "ep_id"):
-            if key in f:
-                ep_ids = np.asarray(f[key][:])
-                if ep_ids.shape[0] != N:
-                    continue
-                starts: list[int] = [0]
-                for i in range(1, N):
-                    if ep_ids[i] != ep_ids[i - 1]:
-                        starts.append(i)
-                ends = starts[1:] + [N]
-                return starts, ends
+        # Per-episode offset + length (stable-worldmodel layout)
+        if "ep_offset" in f and "ep_len" in f:
+            offs = list(map(int, f["ep_offset"][:]))
+            lens = list(map(int, f["ep_len"][:]))
+            return offs, [o + l for o, l in zip(offs, lens)]
         # Explicit start/end arrays
         if "episode_starts" in f and "episode_ends" in f:
             return list(map(int, f["episode_starts"][:])), list(map(int, f["episode_ends"][:]))
@@ -190,11 +193,23 @@ class PushTHDF5(Dataset):
             s = list(map(int, f["episode_starts"][:]))
             return s, s[1:] + [N]
         # Per-episode lengths
-        for key in ("episode_lengths", "episode_length", "ep_lengths"):
+        for key in ("episode_lengths", "episode_length", "ep_lengths", "ep_len"):
             if key in f:
                 lens = list(map(int, f[key][:]))
                 starts = np.cumsum([0] + lens[:-1]).tolist()
                 ends = np.cumsum(lens).tolist()
+                return starts, ends
+        # Per-frame episode id
+        for key in ("episode_index", "episode_idx", "episode_ids", "episode_id", "ep_index", "ep_id"):
+            if key in f:
+                ep_ids = np.asarray(f[key][:])
+                if ep_ids.shape[0] != N:
+                    continue
+                starts = [0]
+                for i in range(1, N):
+                    if ep_ids[i] != ep_ids[i - 1]:
+                        starts.append(i)
+                ends = starts[1:] + [N]
                 return starts, ends
         # Fallback: one long episode
         print(
