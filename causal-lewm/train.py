@@ -41,6 +41,7 @@ def build_dataset(cfg: DictConfig):
             image_size=cfg.encoder.image_size,
             keys_to_load=tuple(cfg.data.keys_to_load),
             path=cfg.data.get("path", None),
+            max_episodes=cfg.data.get("max_episodes", None),
         )
     raise ValueError(f"Unknown data.type={cfg.data.type}")
 

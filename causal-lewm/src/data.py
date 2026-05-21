@@ -94,6 +94,7 @@ class PushTHDF5(Dataset):
         image_size: int = 224,
         keys_to_load: Sequence[str] = ("pixels", "action"),
         path: str | None = None,
+        max_episodes: int | None = None,
     ):
         self.path = Path(path) if path else _stablewm_home() / f"{name}.h5"
         if self.path.suffix == ".zst":
@@ -112,6 +113,7 @@ class PushTHDF5(Dataset):
         self.frameskip = frameskip
         self.image_size = image_size
         self.keys_to_load = list(keys_to_load)
+        self.max_episodes = max_episodes
 
         # Build the window index. Each entry is (episode_offset, length, start_within_episode).
         # For grouped layout, episode_offset is the group key; for flat, it's the absolute
@@ -130,6 +132,8 @@ class PushTHDF5(Dataset):
                 # ---- Layout (a): one Group per episode ----
                 self._layout = "grouped"
                 ep_keys = [k for k in top_keys if k.startswith("episode")] or top_keys
+                if max_episodes is not None:
+                    ep_keys = ep_keys[:max_episodes]
                 self._episode_keys = ep_keys
                 for ek in ep_keys:
                     grp = f[ek]
@@ -149,6 +153,8 @@ class PushTHDF5(Dataset):
                 if pixels_ds.ndim == 5:
                     # (E, T, H, W, C): per-episode along axis 0
                     E, T = pixels_ds.shape[:2]
+                    if max_episodes is not None:
+                        E = min(E, max_episodes)
                     self._flat_shape = "5d"
                     self._episode_keys = [f"ep{e}" for e in range(E)]
                     for e in range(E):
@@ -161,8 +167,11 @@ class PushTHDF5(Dataset):
                     N = pixels_ds.shape[0]
                     self._flat_shape = "4d"
                     starts, ends = self._infer_episode_bounds(f, N)
-                    self._episode_keys = [f"ep{i}" for i in range(len(starts))]
-                    self._ep_bounds = list(zip(starts, ends))
+                    bounds = list(zip(starts, ends))
+                    if max_episodes is not None:
+                        bounds = bounds[:max_episodes]
+                    self._episode_keys = [f"ep{i}" for i in range(len(bounds))]
+                    self._ep_bounds = bounds
                     for s0, e0 in self._ep_bounds:
                         T_ep = e0 - s0
                         for s in range(0, T_ep - span + 1, frameskip):

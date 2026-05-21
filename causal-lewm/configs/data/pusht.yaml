@@ -9,3 +9,6 @@ keys_to_load:
 # Override the default STABLEWM_HOME/<name>.h5 path.
 # Accepts plain .h5 or .h5.zst (auto-decompressed on first use).
 path: null
+# Use only the first K episodes. Shrinks the DINOv2 feature cache so it fits
+# on disk and gives real frame reuse within a run. null = full dataset.
+max_episodes: null

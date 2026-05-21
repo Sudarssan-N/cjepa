@@ -9,6 +9,7 @@ behavior is identical; only the backbone forward is amortized.
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import Sequence
 
@@ -66,10 +67,29 @@ def build_dino_cache(
     with torch.no_grad():
         P = encoder.backbone_tokens(probe).shape[1]
 
-    est_gb = n * P * hidden * 2 / 1e9
+    bytes_per_frame = P * hidden * 2
+    est_bytes = n * bytes_per_frame
+    est_gb = est_bytes / 1e9
+
+    free = shutil.disk_usage(cache_path.parent).free
+    budget = int(free * 0.85)
+    if est_bytes > budget:
+        n_ep = max(1, len(base._episode_keys))
+        frames_per_ep = max(1, n // n_ep)
+        fit_ep = max(1, budget // (frames_per_ep * bytes_per_frame))
+        raise RuntimeError(
+            f"[dino_cache] cache needs ~{est_gb:.1f} GB but only "
+            f"{free / 1e9:.1f} GB free. The full set is {n} frames across "
+            f"{n_ep} episodes (~{frames_per_ep} frames/episode). Re-run with "
+            f"data.max_episodes={fit_ep} (or smaller) to fit, e.g.\n"
+            f"  python train.py data=pusht encoder=dinov2_frozen "
+            f"data.path=/content/pusht_expert_train.h5 data.max_episodes={fit_ep}"
+        )
+
     print(
         f"[dino_cache] encoding {n} unique frames -> {cache_path} "
-        f"(tokens shape ({n}, {P}, {hidden}) float16, ~{est_gb:.1f} GB)",
+        f"(tokens shape ({n}, {P}, {hidden}) float16, ~{est_gb:.1f} GB; "
+        f"{free / 1e9:.1f} GB free)",
         flush=True,
     )
 
