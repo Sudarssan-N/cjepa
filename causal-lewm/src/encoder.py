@@ -51,6 +51,7 @@ class DinoV2Encoder(nn.Module):
         self.proj = nn.Linear(hidden, dim) if hidden != dim else nn.Identity()
         self.norm = nn.LayerNorm(dim)
         self.dim = dim
+        self.hidden = hidden
 
         # ImageNet normalization that DINOv2 was trained with.
         self.register_buffer("mean", torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1))
@@ -68,8 +69,11 @@ class DinoV2Encoder(nn.Module):
             self.backbone.eval()
         return self
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """x: (B, C, H, W) in [0, 1] -> tokens: (B, P, dim)."""
+    def backbone_tokens(self, x: torch.Tensor) -> torch.Tensor:
+        """x: (B, C, H, W) in [0, 1] -> raw frozen patch tokens (B, P, hidden).
+
+        No trainable proj/norm applied — this is what the feature cache stores.
+        """
         x = (x - self.mean) / self.std
         ctx = torch.no_grad() if self.freeze else torch.enable_grad()
         with ctx:
@@ -78,9 +82,15 @@ class DinoV2Encoder(nn.Module):
             except TypeError:
                 # Older transformers versions don't accept the kwarg.
                 out = self.backbone(pixel_values=x)
-        tokens = out.last_hidden_state[:, 1:]  # drop [CLS]
-        z = self.proj(tokens)
-        return self.norm(z)
+        return out.last_hidden_state[:, 1:]  # drop [CLS]
+
+    def from_tokens(self, tokens: torch.Tensor) -> torch.Tensor:
+        """Apply the trainable proj+norm to backbone tokens (B, P, hidden) -> (B, P, dim)."""
+        return self.norm(self.proj(tokens))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """x: (B, C, H, W) in [0, 1] -> tokens: (B, P, dim)."""
+        return self.from_tokens(self.backbone_tokens(x))
 
 
 def build_encoder(name: str, dim: int, image_size: int, freeze: bool, patch_size: int = 8) -> nn.Module:

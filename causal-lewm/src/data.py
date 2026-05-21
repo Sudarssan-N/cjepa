@@ -253,6 +253,48 @@ class PushTHDF5(Dataset):
         act = np.asarray(f["action"][idxs], dtype=np.float32)
         return pix, act
 
+    def _window_base(self, idx: int) -> int:
+        """Global frame offset of window `idx` (flat layouts only)."""
+        if self._layout != "flat":
+            raise NotImplementedError("Feature caching supports flat layouts only.")
+        return self._index[idx][0]
+
+    def get_frame_ids(self, idx: int) -> list[int]:
+        """Global frame indices sampled by window `idx` (flat layouts only).
+
+        For 4d the id indexes the global `pixels` axis; for 5d it is the
+        flattened index e * ep_len + frame.
+        """
+        base = self._window_base(idx)
+        return [base + i * self.frameskip for i in range(self.num_steps)]
+
+    def read_frames_by_id(self, ids: Sequence[int]) -> np.ndarray:
+        """Read raw pixels for global frame `ids` (must be sorted & unique)."""
+        f = self._open()
+        if self._layout != "flat":
+            raise NotImplementedError("Feature caching supports flat layouts only.")
+        if self._flat_shape == "4d":
+            return f["pixels"][list(ids)]
+        T = self._ep_len
+        return np.stack([f["pixels"][i // T, i % T] for i in ids], axis=0)
+
+    def read_action_window(self, idx: int) -> np.ndarray:
+        """Actions for window `idx` without decoding pixels."""
+        f = self._open()
+        entry = self._index[idx]
+        if self._layout == "grouped":
+            ek, start = entry
+            idxs = [start + i * self.frameskip for i in range(self.num_steps)]
+            return np.asarray(f[ek]["action"][idxs], dtype=np.float32)
+        base = entry[0]
+        if self._flat_shape == "5d":
+            T = self._ep_len
+            e, s = base // T, base % T
+            idxs = [s + i * self.frameskip for i in range(self.num_steps)]
+            return np.asarray(f["action"][e, idxs], dtype=np.float32)
+        idxs = [base + i * self.frameskip for i in range(self.num_steps)]
+        return np.asarray(f["action"][idxs], dtype=np.float32)
+
     def __getitem__(self, idx: int):
         f = self._open()
         pixels, action = self._read_window(f, self._index[idx])

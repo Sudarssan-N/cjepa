@@ -67,7 +67,21 @@ def main(cfg: DictConfig):
     n_train = sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6
     print(f"Model params: {n_train:.2f}M trainable / {n_total:.2f}M total | device: {device}")
 
-    dataset = build_dataset(cfg)
+    use_cache = (
+        cfg.get("use_dino_cache", False)
+        and cfg.data.type == "hdf5"
+        and cfg.encoder.name == "dinov2"
+        and cfg.encoder.freeze
+    )
+    if use_cache:
+        from src.dino_cache import build_dino_cache, default_cache_path, CachedDinoDataset
+
+        base = build_dataset(cfg)
+        cache_path = default_cache_path(base, cfg.encoder.image_size)
+        build_dino_cache(base, model.encoder, device, cache_path, cfg.encoder.image_size)
+        dataset = CachedDinoDataset(base, cache_path)
+    else:
+        dataset = build_dataset(cfg)
     loader = DataLoader(
         dataset,
         batch_size=cfg.batch_size,
@@ -88,7 +102,7 @@ def main(cfg: DictConfig):
             frames = frames.to(device, non_blocking=True)
             actions = actions.to(device, non_blocking=True)
 
-            out = model(frames, actions, step=step)
+            out = model(frames, actions, step=step, precomputed=use_cache)
             opt.zero_grad(set_to_none=True)
             out["loss"].backward()
             torch.nn.utils.clip_grad_norm_(

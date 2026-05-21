@@ -73,11 +73,16 @@ class CausalLeWM(nn.Module):
         )
         self.sigreg = PerSlotSIGReg()
 
-    def encode_slots(self, frames: torch.Tensor) -> torch.Tensor:
-        B, T = frames.shape[:2]
-        x = rearrange(frames, "b t c h w -> (b t) c h w")
-        tokens = self.encoder(x)
-        slots = self.slot_attn(tokens)
+    def encode_slots(self, x: torch.Tensor, precomputed: bool = False) -> torch.Tensor:
+        """x is frames (B,T,C,H,W) or, if precomputed, raw backbone tokens (B,T,P,hidden)."""
+        B, T = x.shape[:2]
+        if precomputed:
+            toks = rearrange(x, "b t p h -> (b t) p h")
+            toks = self.encoder.from_tokens(toks)
+        else:
+            imgs = rearrange(x, "b t c h w -> (b t) c h w")
+            toks = self.encoder(imgs)
+        slots = self.slot_attn(toks)
         return rearrange(slots, "(b t) n d -> b t n d", b=B, t=T)
 
     def forward(
@@ -85,12 +90,13 @@ class CausalLeWM(nn.Module):
         frames: torch.Tensor,
         actions: torch.Tensor,
         step: int = 0,
+        precomputed: bool = False,
     ) -> dict:
         cfg = self.cfg
         B, T = frames.shape[:2]
         device = frames.device
 
-        slots = self.encode_slots(frames)
+        slots = self.encode_slots(frames, precomputed=precomputed)
         target = slots.detach()
 
         ratio = curriculum_ratio(step, cfg.warmup_steps, cfg.ramp_steps, cfg.mask_target)
