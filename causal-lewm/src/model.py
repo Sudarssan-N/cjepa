@@ -15,6 +15,7 @@ from .encoder import build_encoder
 from .slot_attention import SlotAttention
 from .predictor import SlotPredictor
 from .sigreg import PerSlotSIGReg
+from .decoder import SpatialBroadcastDecoder
 from .losses import prediction_loss, slot_variance_diversity
 from .object_masking import sample_object_mask, curriculum_ratio
 
@@ -43,6 +44,10 @@ class CausalLeWMConfig:
     # Loss weights
     lambda_sig: float = 1.0
     lambda_div: float = 0.1
+    lambda_recon: float = 0.0          # >0 enables the slot->feature decoder
+    # Slot->feature reconstruction decoder
+    decoder_hidden: int = 512
+    decoder_depth: int = 3
     # Object-mask curriculum (steps measured in optimizer steps)
     mask_target: float = 0.4
     warmup_steps: int = 500
@@ -73,17 +78,43 @@ class CausalLeWM(nn.Module):
         )
         self.sigreg = PerSlotSIGReg()
 
-    def encode_slots(self, x: torch.Tensor, precomputed: bool = False) -> torch.Tensor:
-        """x is frames (B,T,C,H,W) or, if precomputed, raw backbone tokens (B,T,P,hidden)."""
+        self.decoder = None
+        if cfg.lambda_recon > 0:
+            if cfg.encoder_name in ("dinov2", "dinov2-small", "dino"):
+                num_patches = (cfg.image_size // 14) ** 2
+                feat_dim = self.encoder.hidden
+            else:
+                num_patches = (cfg.image_size // cfg.patch_size) ** 2
+                feat_dim = cfg.dim
+            self.decoder = SpatialBroadcastDecoder(
+                slot_dim=cfg.dim,
+                feat_dim=feat_dim,
+                num_patches=num_patches,
+                hidden=cfg.decoder_hidden,
+                depth=cfg.decoder_depth,
+            )
+
+    def encode_slots(self, x: torch.Tensor, precomputed: bool = False):
+        """x is frames (B,T,C,H,W) or, if precomputed, raw backbone tokens (B,T,P,hidden).
+
+        Returns (slots (B,T,N,D), feats (B*T,P,feat_dim)) where feats are the
+        encoder features the slots are formed from — the reconstruction target.
+        """
         B, T = x.shape[:2]
         if precomputed:
-            toks = rearrange(x, "b t p h -> (b t) p h")
-            toks = self.encoder.from_tokens(toks)
+            feats = rearrange(x, "b t p h -> (b t) p h")
+            toks = self.encoder.from_tokens(feats)
+        elif hasattr(self.encoder, "backbone_tokens"):
+            imgs = rearrange(x, "b t c h w -> (b t) c h w")
+            feats = self.encoder.backbone_tokens(imgs)
+            toks = self.encoder.from_tokens(feats)
         else:
             imgs = rearrange(x, "b t c h w -> (b t) c h w")
             toks = self.encoder(imgs)
+            feats = toks
         slots = self.slot_attn(toks)
-        return rearrange(slots, "(b t) n d -> b t n d", b=B, t=T)
+        slots = rearrange(slots, "(b t) n d -> b t n d", b=B, t=T)
+        return slots, feats
 
     def forward(
         self,
@@ -96,7 +127,7 @@ class CausalLeWM(nn.Module):
         B, T = frames.shape[:2]
         device = frames.device
 
-        slots = self.encode_slots(frames, precomputed=precomputed)
+        slots, feats = self.encode_slots(frames, precomputed=precomputed)
         target = slots.detach()
 
         ratio = curriculum_ratio(step, cfg.warmup_steps, cfg.ramp_steps, cfg.mask_target)
@@ -111,6 +142,13 @@ class CausalLeWM(nn.Module):
         loss_div = slot_variance_diversity(slots)
         loss = loss_pred + cfg.lambda_sig * loss_sig + cfg.lambda_div * loss_div
 
+        if self.decoder is not None:
+            recon, _ = self.decoder(slots.reshape(B * T, cfg.num_slots, cfg.dim))
+            loss_recon = torch.nn.functional.mse_loss(recon, feats.detach())
+            loss = loss + cfg.lambda_recon * loss_recon
+        else:
+            loss_recon = torch.zeros((), device=device)
+
         with torch.no_grad():
             s = slots.reshape(B * T, cfg.num_slots, cfg.dim)
             s = torch.nn.functional.normalize(s, dim=-1)
@@ -123,6 +161,7 @@ class CausalLeWM(nn.Module):
             "loss_pred": loss_pred.detach(),
             "loss_sig": loss_sig.detach(),
             "loss_div": loss_div.detach(),
+            "loss_recon": loss_recon.detach(),
             "mask_ratio": torch.tensor(ratio, device=device),
             "slot_uniqueness": slot_uniqueness,
         }
@@ -148,7 +187,7 @@ class CausalLeWM(nn.Module):
         HS = history_size or H
         B, S, T, _ = action_sequence.shape
 
-        init_slots = self.encode_slots(frames)        # (B, H, N, D)
+        init_slots, _ = self.encode_slots(frames)        # (B, H, N, D)
         slots = init_slots.unsqueeze(1).expand(B, S, H, cfg.num_slots, cfg.dim)
         slots = slots.reshape(B * S, H, cfg.num_slots, cfg.dim).clone()
         actions = action_sequence.reshape(B * S, T, -1)
@@ -196,7 +235,7 @@ class CausalLeWM(nn.Module):
         device = history_frames.device
         B, H = history_frames.shape[:2]
 
-        goal_slots = self.encode_slots(goal_frame.unsqueeze(1))[:, 0]    # (B, N, D)
+        goal_slots = self.encode_slots(goal_frame.unsqueeze(1))[0][:, 0]    # (B, N, D)
 
         mu = torch.zeros(B, horizon, action_dim, device=device)
         sigma = torch.full_like(mu, (action_high - action_low) / 2.0)
