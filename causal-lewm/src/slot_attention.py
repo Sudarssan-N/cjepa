@@ -25,8 +25,16 @@ class SlotAttention(nn.Module):
         self.eps = eps
         self.scale = dim ** -0.5
 
-        self.slots_mu = nn.Parameter(torch.randn(1, 1, dim) * 0.02)
-        self.slots_logsigma = nn.Parameter(torch.zeros(1, 1, dim))
+        # Learned *per-slot* initialization (one anchor per slot index) instead of
+        # the Locatello-style shared mu + unit Gaussian noise. The shared/random
+        # init makes each slot's identity arbitrary and re-drawn every forward, so
+        # slot index n binds to different objects across frames and the per-index
+        # next-slot prediction target is both misaligned in time and stochastic
+        # across passes — pred is then irreducible at the variance floor. Distinct
+        # anchors + low noise give each slot a persistent identity, making
+        # next-slot prediction well-posed and the target stable.
+        self.slots_mu = nn.Parameter(torch.randn(1, num_slots, dim))
+        self.slots_logsigma = nn.Parameter(torch.full((1, num_slots, dim), -4.0))
 
         self.to_q = nn.Linear(dim, dim, bias=False)
         self.to_k = nn.Linear(dim, dim, bias=False)
