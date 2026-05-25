@@ -269,9 +269,10 @@ once the broadcast decoder is added.
       (slot_sim~0, recon 6.2→0.30 over 5000 steps), but `pred`≈0.91 (weak).
 - [x] **Run 9 — prediction diagnostic:** mask OFF → `pred` 0.91→0.70. **Mixed:**
       masking is ~half the difficulty; clean pred still moderate (~0.70).
-- [ ] Add normalized pred metric (NMSE + cosine) — in progress.
-- [ ] **SAVi-style temporal slot propagation** (carry slot state frame→frame) to
-      attack the residual clean-prediction gap.
+- [x] Add normalized pred metric (NMSE + cosine) — done (`3ed10d5`).
+- [x] **SAVi-style temporal slot propagation** implemented (`d9e7970`,
+      `slot_propagate=true`). **Run 10 pending:** does it lower `pred`/`nmse`
+      vs Run 8/9? Ablate `slot_propagate=false` for the paper.
 - [ ] Reconsider mask curriculum (0.4 may be too aggressive); frameskip sweep
       (needs cache rebuild).
 - [ ] Tune (λ_decorr, λ_recon) balance; report sensitivity.
@@ -296,7 +297,9 @@ once the broadcast decoder is added.
 | `57167b6` | slot→feature reconstruction (DINOSAUR decoder), λ_recon |
 | `ee61d5c` | learned per-slot init (stable slot identity, low noise) |
 | `b72a69d` | within-frame slot decorrelation loss, λ_decorr |
+| `3ed10d5` | normalized prediction metrics (pred_nmse, pred_cos) |
+| `d9e7970` | SAVi-style temporal slot propagation, `slot_propagate` |
 
-_Last updated: through Run 9 — collapse beaten at scale; prediction diagnostic
-shows masking ≈ half the difficulty, clean pred still moderate (~0.70). Next:
-normalized pred metric + SAVi temporal slot propagation._
+_Last updated: SAVi temporal slot propagation implemented (`d9e7970`) +
+normalized pred metrics (`3ed10d5`). Run 10 (SAVi on 500 ep, read nmse/pcos)
+pending; ablate slot_propagate=false for the paper._
