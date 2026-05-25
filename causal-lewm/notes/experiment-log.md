@@ -146,14 +146,27 @@ once the broadcast decoder is added.
   prediction / collapsed slots. Need to **decouple**: low noise for stable
   targets + an explicit distinctness loss.
 
-### Run 7 — Overfit, + within-frame decorrelation loss  *(PENDING — awaiting log)*
+### Run 7 — Overfit, + within-frame decorrelation loss  ✅ **collapse beaten**
 - **Change (`b72a69d`):** added `slot_decorrelation` (mean +off-diagonal cosine
   sim between slots within a frame), λ_decorr=1.0, on top of low-noise init.
-- **Hypothesis:** `pred` low (<1.0, honest), `slot_sim` driven down (~0.1–0.3),
-  `recon` still falling — distinct + grounded + predictable simultaneously.
-- **Result:** _to be filled in._
-- **Tuning levers prepared:** if `slot_sim` stays high → λ_decorr↑ (2.0); if
-  `recon`/`pred` stall (slots forced apart at content's expense) → λ_decorr↓ (0.5).
+- **Config:** OF2, λ_sig=0.09, λ_div=0.1, λ_decorr=1.0, λ_recon=1.0, 500 steps.
+- **Result — all four healthy simultaneously:**
+  - `pred` 0.59 → **0.044** (below floor, *honest* — not the 1-slot shortcut)
+  - `slot_sim` 0.52 → **0.004** (slots distinct, no collapse)
+  - `recon` 6.12 → **0.93** (grounded)
+  - `decorr` 0.52 → 0.092; `div` ~0.10; `sig` 77 → 4.5
+- **Dynamics worth noting:** `slot_sim` first *rose* to ~0.89 (step 75) as the
+  model attempted to collapse, then `decorr` engaged and drove it down to ~0.004
+  by step 499. Consistent with the weak-gradient-*at-exact*-collapse caveat: the
+  cosine penalty kicks in once slots are *near* (not perfectly) identical — and
+  that was sufficient here to reverse an in-progress collapse.
+- **Read:** ✅ The full objective — stable slot identity (low-noise learned init)
+  + `recon` (content) + `sig`/`div` (marginals) + `decorr` (within-frame
+  distinctness) — yields distinct, grounded, *and* predictable slots with no
+  collapse, on the overfit set. This is the first run that escapes **both**
+  collapse modes at once.
+- **Caveat:** overfit on 2 episodes; `pred`=0.044 is partly memorization. Real
+  test is whether this holds on a larger set (Run 8).
 
 ## 5. Insights so far (paper-relevant)
 
@@ -186,10 +199,24 @@ once the broadcast decoder is added.
    what looked like sig/div keeping slots apart (Run 5) was actually the random
    init. Worth calling out as a methodological caution.
 
+6. **`decorr` can reverse an in-progress collapse, not just prevent it.** In
+   Run 7 `slot_sim` spiked to ~0.89 before being driven to ~0.004. The cosine
+   penalty has vanishing gradient at *exact* collapse but a usable one at
+   near-collapse, so it rescues slots that have started to merge. (If a run ever
+   reaches exact collapse first, this term cannot recover it — keep init noise
+   nonzero, σ≈0.018, as a safeguard.)
+
+7. **Ablation story for the paper is now clean:** each of {stable identity,
+   recon, decorr} removed individually re-opens a specific, *named* failure
+   (Runs 5, 4, 6 respectively). This is a ready-made ablation table.
+
 ## 6. Open questions / next steps
 
-- [ ] Run 7 result: does `decorr` + low-noise init give all-three-healthy?
-- [ ] Scale Run 7 to `max_episodes=500`, then larger; does it hold beyond overfit?
+- [x] Run 7 result: does `decorr` + low-noise init give all-three-healthy?
+      **Yes** — overfit escapes both collapse modes (commit `b72a69d`).
+- [ ] **Run 8:** scale Run 7 to `max_episodes=500`, then larger; does it hold
+      beyond overfit? Expect `pred` < 1.0 but > overfit value, `slot_sim` low,
+      `recon` falling.
 - [ ] Tune (λ_decorr, λ_recon) balance; report sensitivity.
 - [ ] If per-frame slots still wobble → **SAVi-style temporal slot propagation**
       (carry slot state frame→frame instead of re-encoding independently).
@@ -213,4 +240,5 @@ once the broadcast decoder is added.
 | `ee61d5c` | learned per-slot init (stable slot identity, low noise) |
 | `b72a69d` | within-frame slot decorrelation loss, λ_decorr |
 
-_Last updated: through Run 6 (commit `b72a69d`); Run 7 pending._
+_Last updated: through Run 7 (commit `b72a69d`) — collapse beaten on overfit;
+Run 8 (scale-up) pending._
