@@ -32,6 +32,7 @@ model:
   dim: 192                  # matches LeWM's wm.embed_dim default
   num_slots: 7
   slot_iters: 3
+  slot_propagate: true      # SAVi-style temporal slot propagation (false = per-frame independent)
   num_frames: ${data.num_steps}
   future_frames: ${data.num_preds}
   action_dim: 2

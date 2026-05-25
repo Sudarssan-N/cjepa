@@ -32,6 +32,7 @@ class CausalLeWMConfig:
     # Slot attention
     num_slots: int = 7
     slot_iters: int = 3
+    slot_propagate: bool = True        # SAVi-style: init frame t's slots from t-1
     # Sequence
     num_frames: int = 8
     future_frames: int = 1
@@ -113,8 +114,20 @@ class CausalLeWM(nn.Module):
             imgs = rearrange(x, "b t c h w -> (b t) c h w")
             toks = self.encoder(imgs)
             feats = toks
-        slots = self.slot_attn(toks)
-        slots = rearrange(slots, "(b t) n d -> b t n d", b=B, t=T)
+
+        if self.cfg.slot_propagate:
+            # SAVi: run slot attention per frame, carrying slot state forward so
+            # slot index n keeps its object identity across the window.
+            toks_t = rearrange(toks, "(b t) p d -> t b p d", b=B, t=T)
+            prev = None
+            per_frame = []
+            for t in range(T):
+                prev = self.slot_attn(toks_t[t], init_slots=prev)
+                per_frame.append(prev)
+            slots = torch.stack(per_frame, dim=1)  # (B, T, N, D)
+        else:
+            slots = self.slot_attn(toks)
+            slots = rearrange(slots, "(b t) n d -> b t n d", b=B, t=T)
         return slots, feats
 
     def forward(

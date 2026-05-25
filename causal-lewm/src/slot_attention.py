@@ -51,14 +51,22 @@ class SlotAttention(nn.Module):
         self.norm_slots = nn.LayerNorm(dim)
         self.norm_pre_mlp = nn.LayerNorm(dim)
 
-    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
-        """inputs: (B, P, D) -> slots: (B, N, D)."""
+    def forward(self, inputs: torch.Tensor, init_slots: torch.Tensor | None = None) -> torch.Tensor:
+        """inputs: (B, P, D) -> slots: (B, N, D).
+
+        If `init_slots` (B, N, D) is given, start from it instead of sampling
+        from the learned anchors — used for SAVi-style temporal propagation,
+        where frame t is initialized from frame t-1's output slots.
+        """
         B, P, D = inputs.shape
         N = self.num_slots
 
-        mu = self.slots_mu.expand(B, N, D)
-        sigma = self.slots_logsigma.exp().expand(B, N, D)
-        slots = mu + sigma * torch.randn_like(mu)
+        if init_slots is None:
+            mu = self.slots_mu.expand(B, N, D)
+            sigma = self.slots_logsigma.exp().expand(B, N, D)
+            slots = mu + sigma * torch.randn_like(mu)
+        else:
+            slots = init_slots
 
         inputs = self.norm_input(inputs)
         k = self.to_k(inputs)
