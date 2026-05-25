@@ -16,7 +16,7 @@ from .slot_attention import SlotAttention
 from .predictor import SlotPredictor
 from .sigreg import PerSlotSIGReg
 from .decoder import SpatialBroadcastDecoder
-from .losses import prediction_loss, slot_variance_diversity
+from .losses import prediction_loss, slot_variance_diversity, slot_decorrelation
 from .object_masking import sample_object_mask, curriculum_ratio
 
 
@@ -44,6 +44,7 @@ class CausalLeWMConfig:
     # Loss weights
     lambda_sig: float = 1.0
     lambda_div: float = 0.1
+    lambda_decorr: float = 0.0         # within-frame slot decorrelation
     lambda_recon: float = 0.0          # >0 enables the slot->feature decoder
     # Slot->feature reconstruction decoder
     decoder_hidden: int = 512
@@ -140,7 +141,13 @@ class CausalLeWM(nn.Module):
         loss_pred = prediction_loss(pred, target, slot_mask.float())
         loss_sig = self.sigreg(slots)
         loss_div = slot_variance_diversity(slots)
-        loss = loss_pred + cfg.lambda_sig * loss_sig + cfg.lambda_div * loss_div
+        loss_decorr = slot_decorrelation(slots)
+        loss = (
+            loss_pred
+            + cfg.lambda_sig * loss_sig
+            + cfg.lambda_div * loss_div
+            + cfg.lambda_decorr * loss_decorr
+        )
 
         if self.decoder is not None:
             recon, _ = self.decoder(slots.reshape(B * T, cfg.num_slots, cfg.dim))
@@ -161,6 +168,7 @@ class CausalLeWM(nn.Module):
             "loss_pred": loss_pred.detach(),
             "loss_sig": loss_sig.detach(),
             "loss_div": loss_div.detach(),
+            "loss_decorr": loss_decorr.detach(),
             "loss_recon": loss_recon.detach(),
             "mask_ratio": torch.tensor(ratio, device=device),
             "slot_uniqueness": slot_uniqueness,

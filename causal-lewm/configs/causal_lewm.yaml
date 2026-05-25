@@ -41,6 +41,7 @@ model:
   pred_mlp_dim: 768
   lambda_sig: 0.09          # SIGReg weight from LeWM (loss.sigreg.weight)
   lambda_div: 0.1
+  lambda_decorr: 1.0        # within-frame slot decorrelation (prevents slot collapse)
   lambda_recon: 1.0         # slot->DINO-feature reconstruction (0 disables decoder)
   decoder_hidden: 512
   decoder_depth: 3
