@@ -222,18 +222,28 @@ once the broadcast decoder is added.
   - `pred` (raw): 0.70 → **~0.19** (best ~0.14).
   - `slot_sim` ~0 / slightly negative (no collapse); `recon` 6.21 → **0.26**;
     `sig` → ~2.0; `div` → ~0.03; `decorr` → ~0.01.
-- **Head-to-head at fixed mask=0.4:** Run 8 (no SAVi) `pred`≈0.91 (`nmse`≈0.9)
-  → Run 10 (SAVi) `pred`≈0.19 / `nmse`≈0.18. **The predictor goes from
-  explaining ~10% to ~82% of slot variance**, with masking unchanged.
-- **Read:** ✅✅ Temporal slot identity was the **dominant** prediction
-  bottleneck — confirms the Runs 5/6/9 diagnosis. SAVi (carry slot state
-  frame→frame) makes next-slot prediction well-posed; the per-frame-independent
-  encoding's lack of cross-frame object↔slot correspondence was the limiter, not
-  capacity or data. Collapse stays solved throughout. Still improving at 5000
-  steps → longer training likely helps further.
-- **Next:** controlled ablation `slot_propagate=false` (same config + new metric)
-  to quantify the SAVi gain in NMSE for the paper; then longer training and
-  planning eval.
+- **Read:** ✅✅ Strong prediction with collapse still solved. The controlled
+  effect of SAVi is measured against Run 11 (same code, flag flipped) — see
+  there. Still improving at 5000 steps → longer training likely helps further.
+  [NOTE: an earlier draft compared to Run 8's `pred`≈0.91; that was an
+  *uncontrolled* earlier snapshot and overstated the gain — use Run 11.]
+
+### Run 11 — Ablation: SAVi OFF (`slot_propagate=false`), same config as Run 10
+- **Config:** identical to Run 10 (500 ep, full objective, 5000 steps, mask→0.4)
+  except `model.slot_propagate=false`. Same code (`de187ef`) — the **controlled**
+  comparison.
+- **Result:** `nmse` → **~0.47** (end; pred ~0.48), `pcos` ~0.71, `slot_sim` ~0
+  (no collapse), `recon` 6.27 → 0.22. `pred` *decreases* over training
+  (0.63 → 0.48), unlike Run 8.
+- **Controlled SAVi effect (Run 11 → Run 10, single variable):**
+  `nmse` **0.47 → 0.18**, `pred` 0.48 → 0.19, `pcos` 0.71 → 0.92.
+  ≈53% → ≈82% of slot variance explained. A large, clean win.
+- **Two cautions for the paper:**
+  1. The earlier "≈0.9 baseline" (Run 8) was an **uncontrolled** earlier
+     snapshot and its `pred` *rose* over training (0.08→0.91, likely a worse
+     basin). The honest no-SAVi baseline is **0.47**, not 0.9.
+  2. Two nominally-identical no-SAVi runs landed at 0.91 (Run 8) vs 0.48
+     (Run 11) → **real run-to-run variance**. Report **multiple seeds** per arm.
 
 ## 5. Insights so far (paper-relevant)
 
@@ -283,13 +293,15 @@ once the broadcast decoder is added.
    sufficient for a useful world model — prediction quality is its own axis.
    (Frame the paper around *both*: stability AND predictive utility.)
 
-9. **Temporal slot identity is THE key enabler of prediction.** SAVi-style
-   propagation cut NMSE from ~0.9 → ~0.18 at fixed masking (Run 8 → Run 10),
-   i.e. ~10% → ~82% of slot variance explained. The bottleneck was the
-   *ill-posedness* of per-frame-independent slot encoding (no object↔slot
-   correspondence across time), not model capacity or data volume. This is
-   likely the headline mechanism of the paper, with a clean controlled ablation
-   (`slot_propagate` on/off) to back it.
+9. **Temporal slot identity is a key enabler of prediction.** Controlled
+   ablation (Run 11 → Run 10, same code, only `slot_propagate` flipped): SAVi
+   cut NMSE **0.47 → 0.18** at fixed masking (≈53% → ≈82% of slot variance
+   explained). The bottleneck was the *ill-posedness* of per-frame-independent
+   slot encoding (no object↔slot correspondence across time), not capacity or
+   data. Likely the paper's headline mechanism — but report multiple seeds:
+   run-to-run variance is real (two no-SAVi runs gave 0.91 vs 0.48), so single
+   runs over/understate the effect. (An earlier note claimed 0.9→0.18 from the
+   uncontrolled Run 8; corrected to the controlled 0.47→0.18.)
 
 ## 6. Open questions / next steps
 
@@ -302,8 +314,11 @@ once the broadcast decoder is added.
 - [x] Add normalized pred metric (NMSE + cosine) — done (`3ed10d5`).
 - [x] **SAVi-style temporal slot propagation** (`d9e7970`). **Run 10: big win**
       — `nmse` ≈0.9 → ≈0.18 at fixed mask=0.4 (~82% variance explained).
-- [ ] **Ablation:** rerun Run 10 config with `slot_propagate=false` + new metric
-      to get the controlled NMSE gap for the paper.
+- [x] **Ablation (Run 11):** `slot_propagate=false`, same code → `nmse` ~0.47
+      vs SAVi's ~0.18. Controlled gain confirmed (smaller than the uncontrolled
+      Run-8 extrapolation).
+- [ ] **Multiple seeds** per arm (SAVi on/off): run-to-run variance is real
+      (no-SAVi: 0.91 vs 0.48). Need mean±std before any headline number.
 - [ ] Longer training (Run 10 still improving at 5000 steps) and/or scale episodes.
 - [ ] Planning eval (CEM-MPC, `model.plan_mpc`) vs LeWM; qualitative slot masks.
 - [ ] End-to-end unfrozen DINOv2 (the central hypothesis).
@@ -334,7 +349,8 @@ once the broadcast decoder is added.
 | `3ed10d5` | normalized prediction metrics (pred_nmse, pred_cos) |
 | `d9e7970` | SAVi-style temporal slot propagation, `slot_propagate` |
 
-_Last updated: through Run 10 — SAVi propagation is a big prediction win
-(nmse ≈0.9 → ≈0.18 at fixed mask=0.4, ~82% variance explained; collapse stays
-solved). Next: controlled slot_propagate=false ablation, then longer training /
-planning eval._
+_Last updated: through Run 11 (controlled SAVi ablation). SAVi is a clean win
+— `nmse` 0.47 (off) → 0.18 (on) at fixed mask=0.4, collapse solved in both.
+Corrected the earlier overstated 0.9→0.18 (uncontrolled Run 8). Caveat:
+run-to-run variance is real → need multiple seeds. Next: multi-seed, longer
+training, planning eval._
