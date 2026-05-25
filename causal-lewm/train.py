@@ -12,15 +12,25 @@ Examples:
 """
 
 import os
+import random
 import time
 from pathlib import Path
 
 import hydra
+import numpy as np
 import torch
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 
 from src.model import CausalLeWM, CausalLeWMConfig
+
+
+def seed_everything(seed: int) -> None:
+    """Make a run reproducible for multi-seed experiments (was previously unset)."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
 
 def build_dataset(cfg: DictConfig):
@@ -52,6 +62,9 @@ def main(cfg: DictConfig):
     if device == "cuda" and not torch.cuda.is_available():
         device = "cpu"
         print("CUDA unavailable, falling back to CPU.")
+
+    seed_everything(cfg.seed)
+    print(f"seed: {cfg.seed}")
 
     out_dir = Path(cfg.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
