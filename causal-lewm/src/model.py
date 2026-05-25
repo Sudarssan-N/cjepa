@@ -163,6 +163,19 @@ class CausalLeWM(nn.Module):
             eye = torch.eye(cfg.num_slots, device=device).unsqueeze(0)
             slot_uniqueness = (sim * (1 - eye)).sum() / (B * T * cfg.num_slots * (cfg.num_slots - 1))
 
+            # Normalized prediction quality on masked positions, so the raw MSE
+            # is legible regardless of slot variance:
+            #   pred_nmse = MSE / Var(target)  (1.0 == mean-predictor baseline)
+            #   pred_cos  = cosine(pred, target)  (1.0 == perfect direction)
+            wm = slot_mask.float().unsqueeze(-1)            # (B,T,N,1)
+            denom = wm.sum().clamp_min(1.0)
+            mean_t = (target * wm).sum(dim=(0, 1, 2), keepdim=True) / denom
+            var_t = (((target - mean_t) ** 2) * wm).sum() / (denom * cfg.dim)
+            pred_nmse = loss_pred / var_t.clamp_min(1e-6)
+            pn = torch.nn.functional.normalize(pred, dim=-1)
+            tn = torch.nn.functional.normalize(target, dim=-1)
+            pred_cos = ((pn * tn).sum(-1) * slot_mask.float()).sum() / denom
+
         return {
             "loss": loss,
             "loss_pred": loss_pred.detach(),
@@ -170,6 +183,8 @@ class CausalLeWM(nn.Module):
             "loss_div": loss_div.detach(),
             "loss_decorr": loss_decorr.detach(),
             "loss_recon": loss_recon.detach(),
+            "pred_nmse": pred_nmse.detach(),
+            "pred_cos": pred_cos.detach(),
             "mask_ratio": torch.tensor(ratio, device=device),
             "slot_uniqueness": slot_uniqueness,
         }

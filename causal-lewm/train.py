@@ -120,6 +120,8 @@ def main(cfg: DictConfig):
                     f"| div {out['loss_div'].item():.4f} "
                     f"| decorr {out['loss_decorr'].item():.4f} "
                     f"| recon {out['loss_recon'].item():.4f} "
+                    f"| nmse {out['pred_nmse'].item():.3f} "
+                    f"| pcos {out['pred_cos'].item():.3f} "
                     f"| mask {out['mask_ratio'].item():.2f} "
                     f"| slot_sim {out['slot_uniqueness'].item():.3f} "
                     f"| {dt:.1f}s"

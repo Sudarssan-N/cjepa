@@ -197,6 +197,22 @@ once the broadcast decoder is added.
   temporal slot propagation). Also add a normalized pred metric (pred / slot
   variance, or cosine) so distance from the true floor is legible.
 
+### Run 9 — Prediction diagnostic: mask OFF, 500 episodes, 2000 steps
+- **Config:** `max_episodes=500`, `model.mask_target=0` (predict only the future
+  frame from clean history), full objective otherwise, 2000 steps, frameskip 5.
+- **Result:** `slot_sim` ~0 (no collapse), `recon` 6.26 → 0.40; `pred` plateaus
+  **~0.70** (vs ~0.91 in Run 8 with mask 0.4).
+- **Read — mixed verdict, both factors real:**
+  1. **Object masking ≈ half the difficulty** (0.70 → 0.91): masked-history-slot
+     prediction at ratio 0.4 is hard; the curriculum is aggressive.
+  2. **Clean next-frame prediction is still only moderate** (~0.70 ≈ 30% below the
+     mean floor). For Push-T's simple dynamics this is mediocre → residual limit
+     is likely **slot temporal identity** (per-frame independent slot attention)
+     and/or `frameskip=5` (large inter-frame motion).
+- **Next:** (a) add a normalized pred metric (NMSE = pred / target-variance,
+  + cosine) for legible comparison; (b) attack the residual via **SAVi-style
+  temporal slot propagation**; optionally a frameskip sweep (needs cache rebuild).
+
 ## 5. Insights so far (paper-relevant)
 
 1. **The variance floor is the tell.** `pred ≈ 1.0` with unit-variance slots
@@ -251,10 +267,13 @@ once the broadcast decoder is added.
       **Yes** — overfit escapes both collapse modes (commit `b72a69d`).
 - [x] **Run 8:** scale Run 7 to `max_episodes=500`. **Collapse holds at scale**
       (slot_sim~0, recon 6.2→0.30 over 5000 steps), but `pred`≈0.91 (weak).
-- [ ] **Run 9 — prediction diagnostic:** is weak `pred` task-difficulty or slot
-      identity? Try `mask_target=0` + smaller `frameskip`; add normalized pred metric.
-- [ ] If identity-limited → **SAVi-style temporal slot propagation** (carry slot
-      state frame→frame instead of per-frame independent encoding).
+- [x] **Run 9 — prediction diagnostic:** mask OFF → `pred` 0.91→0.70. **Mixed:**
+      masking is ~half the difficulty; clean pred still moderate (~0.70).
+- [ ] Add normalized pred metric (NMSE + cosine) — in progress.
+- [ ] **SAVi-style temporal slot propagation** (carry slot state frame→frame) to
+      attack the residual clean-prediction gap.
+- [ ] Reconsider mask curriculum (0.4 may be too aggressive); frameskip sweep
+      (needs cache rebuild).
 - [ ] Tune (λ_decorr, λ_recon) balance; report sensitivity.
 - [ ] If per-frame slots still wobble → **SAVi-style temporal slot propagation**
       (carry slot state frame→frame instead of re-encoding independently).
@@ -278,6 +297,6 @@ once the broadcast decoder is added.
 | `ee61d5c` | learned per-slot init (stable slot identity, low noise) |
 | `b72a69d` | within-frame slot decorrelation loss, λ_decorr |
 
-_Last updated: through Run 8 (commit `b72a69d`) — collapse beaten at scale
-(slot_sim~0, recon→0.30 over 5000 steps); prediction weak (pred≈0.91). Next:
-diagnose prediction quality (Run 9)._
+_Last updated: through Run 9 — collapse beaten at scale; prediction diagnostic
+shows masking ≈ half the difficulty, clean pred still moderate (~0.70). Next:
+normalized pred metric + SAVi temporal slot propagation._
