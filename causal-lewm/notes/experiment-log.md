@@ -168,6 +168,35 @@ once the broadcast decoder is added.
 - **Caveat:** overfit on 2 episodes; `pred`=0.044 is partly memorization. Real
   test is whether this holds on a larger set (Run 8).
 
+### Run 8 — Scale-up, full objective, 500 episodes, 5000 steps  ✅ collapse holds / ⚠️ weak prediction
+- **Config:** `max_episodes=500` (~10,737 cached frames), full objective
+  (λ_sig=0.09, λ_div=0.1, λ_decorr=1.0, λ_recon=1.0), 5000 steps, mask curriculum
+  active (→0.4 by ~step 2000). ~0.39 s/step (decoder included).
+- **Result:**
+  - `slot_sim`: spike to ~0.84 (step ~75) → driven to ~0 by step 350 → **stays
+    ~0 / slightly negative for the remaining ~4,600 steps.** No collapse at scale.
+  - `recon`: 6.19 → **0.30** (slots strongly grounded).
+  - `decorr` → ~0.05; `div` → ~0.05; `sig` → ~2.2 (not fully minimized at λ=0.09).
+  - `pred`: 0.52 → dip 0.08 (transient collapse) → **rises** to ~0.75 (step 700)
+    → plateaus **~0.85–0.92, ends 0.91**.
+- **Read:**
+  - ✅ **Collapse is beaten at scale** — first fully healthy representation
+    (distinct + grounded + stable) on a real subset over a long run. The chased
+    problem (Runs 1–7) is solved.
+  - ⚠️ **Prediction is weak** — `pred`≈0.91 is only ~9% below the mean-prediction
+    floor; the predictor explains little slot variance. The `pred` *rise* over
+    training is expected, not regression: early low `pred` was the transient
+    1-slot collapse (near-zero target variance), and as slots de-collapsed +
+    the mask ramped to 0.4, genuine difficulty rose.
+- **Conclusion:** representation collapse and prediction quality are **separable
+  problems**. Solved the first; the second is the new bottleneck.
+- **Next (Run 9+):** diagnose *why* prediction is weak —
+  (a) task difficulty (mask_target, frameskip) vs (b) slot temporal identity.
+  Cheap diagnostic: set `mask_target=0` + smaller `frameskip` and see if `pred`
+  drops a lot (→ task hard) or stays ~0.9 (→ identity/predictor issue → SAVi-style
+  temporal slot propagation). Also add a normalized pred metric (pred / slot
+  variance, or cosine) so distance from the true floor is legible.
+
 ## 5. Insights so far (paper-relevant)
 
 1. **The variance floor is the tell.** `pred ≈ 1.0` with unit-variance slots
@@ -210,13 +239,22 @@ once the broadcast decoder is added.
    recon, decorr} removed individually re-opens a specific, *named* failure
    (Runs 5, 4, 6 respectively). This is a ready-made ablation table.
 
+8. **Solving collapse ≠ strong prediction.** Run 8 shows the two are separable:
+   with a fully healthy (distinct/grounded/stable) representation, `pred` is
+   still only ~9% below the mean floor. Anti-collapse is necessary but not
+   sufficient for a useful world model — prediction quality is its own axis.
+   (Frame the paper around *both*: stability AND predictive utility.)
+
 ## 6. Open questions / next steps
 
 - [x] Run 7 result: does `decorr` + low-noise init give all-three-healthy?
       **Yes** — overfit escapes both collapse modes (commit `b72a69d`).
-- [ ] **Run 8:** scale Run 7 to `max_episodes=500`, then larger; does it hold
-      beyond overfit? Expect `pred` < 1.0 but > overfit value, `slot_sim` low,
-      `recon` falling.
+- [x] **Run 8:** scale Run 7 to `max_episodes=500`. **Collapse holds at scale**
+      (slot_sim~0, recon 6.2→0.30 over 5000 steps), but `pred`≈0.91 (weak).
+- [ ] **Run 9 — prediction diagnostic:** is weak `pred` task-difficulty or slot
+      identity? Try `mask_target=0` + smaller `frameskip`; add normalized pred metric.
+- [ ] If identity-limited → **SAVi-style temporal slot propagation** (carry slot
+      state frame→frame instead of per-frame independent encoding).
 - [ ] Tune (λ_decorr, λ_recon) balance; report sensitivity.
 - [ ] If per-frame slots still wobble → **SAVi-style temporal slot propagation**
       (carry slot state frame→frame instead of re-encoding independently).
@@ -240,5 +278,6 @@ once the broadcast decoder is added.
 | `ee61d5c` | learned per-slot init (stable slot identity, low noise) |
 | `b72a69d` | within-frame slot decorrelation loss, λ_decorr |
 
-_Last updated: through Run 7 (commit `b72a69d`) — collapse beaten on overfit;
-Run 8 (scale-up) pending._
+_Last updated: through Run 8 (commit `b72a69d`) — collapse beaten at scale
+(slot_sim~0, recon→0.30 over 5000 steps); prediction weak (pred≈0.91). Next:
+diagnose prediction quality (Run 9)._
