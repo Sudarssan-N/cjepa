@@ -11,9 +11,11 @@ Examples:
   python train.py data=pusht encoder=dinov2_finetune
 """
 
+import json
 import os
 import random
 import time
+from collections import deque
 from pathlib import Path
 
 import hydra
@@ -106,6 +108,11 @@ def main(cfg: DictConfig):
         persistent_workers=cfg.num_workers > 0,
     )
 
+    # Tail buffer of per-step scalars so the reported run metric is averaged over
+    # the last steps (stable) rather than read off one noisy final step.
+    tail_keys = ("pred_nmse", "pred_cos", "loss_pred", "loss_recon", "slot_uniqueness")
+    tail = deque(maxlen=500)
+
     model.train()
     step = 0
     t0 = time.time()
@@ -123,6 +130,8 @@ def main(cfg: DictConfig):
                 [p for p in model.parameters() if p.requires_grad], cfg.grad_clip
             )
             opt.step()
+
+            tail.append({k: out[k].item() for k in tail_keys})
 
             if step % cfg.log_every == 0 or step == cfg.steps - 1:
                 dt = time.time() - t0
@@ -149,6 +158,30 @@ def main(cfg: DictConfig):
     final = out_dir / "final.pt"
     torch.save({"model": model.state_dict(), "step": step, "cfg": OmegaConf.to_container(cfg)}, final)
     print(f"saved final checkpoint -> {final}")
+
+    # Tail-averaged run summary -> one JSON line appended to results_file, so a
+    # multi-seed/ablation sweep collapses to a tiny file instead of many logs.
+    n_tail = len(tail)
+    summary = {k: float(np.mean([t[k] for t in tail])) for k in tail_keys} if n_tail else {}
+    record = {
+        "seed": int(cfg.seed),
+        "slot_propagate": bool(cfg.model.slot_propagate),
+        "max_episodes": cfg.data.get("max_episodes", None),
+        "mask_target": float(cfg.model.mask_target),
+        "steps": int(cfg.steps),
+        "tail_steps": n_tail,
+        "nmse": round(summary.get("pred_nmse", float("nan")), 4),
+        "pcos": round(summary.get("pred_cos", float("nan")), 4),
+        "pred": round(summary.get("loss_pred", float("nan")), 4),
+        "recon": round(summary.get("loss_recon", float("nan")), 4),
+        "slot_sim": round(summary.get("slot_uniqueness", float("nan")), 4),
+        "out_dir": str(out_dir),
+    }
+    print("SUMMARY " + json.dumps(record))
+    results_file = Path(cfg.get("results_file", "results.jsonl"))
+    with results_file.open("a") as f:
+        f.write(json.dumps(record) + "\n")
+    print(f"appended run summary -> {results_file.resolve()}")
 
 
 if __name__ == "__main__":

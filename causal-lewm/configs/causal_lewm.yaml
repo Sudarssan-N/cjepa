@@ -22,6 +22,8 @@ num_workers: 4
 # Precompute frozen-DINOv2 patch tokens to disk and train on the cache.
 # Only active for encoder=dinov2 with freeze=true; ignored otherwise.
 use_dino_cache: true
+# Per-run final-metric summaries are appended here (one JSON line per run).
+results_file: results.jsonl
 
 # Model — keys map 1:1 to CausalLeWMConfig fields
 model:
