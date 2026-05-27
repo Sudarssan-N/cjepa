@@ -13,6 +13,10 @@ output_dir: outputs/${now:%Y-%m-%d_%H-%M-%S}
 steps: 5000
 batch_size: 32
 lr: 3e-4
+# LR for the DINOv2 backbone when unfrozen (encoder=dinov2_finetune). Much lower
+# than `lr` so finetuning adapts features without destroying the pretraining.
+# Ignored when the encoder is frozen (no trainable backbone params).
+backbone_lr: 1e-5
 weight_decay: 1e-4
 grad_clip: 1.0
 log_every: 25

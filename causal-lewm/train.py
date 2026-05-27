@@ -74,10 +74,23 @@ def main(cfg: DictConfig):
 
     model_cfg = CausalLeWMConfig(**OmegaConf.to_container(cfg.model, resolve=True))
     model = CausalLeWM(model_cfg).to(device)
-    opt = torch.optim.AdamW(
-        [p for p in model.parameters() if p.requires_grad],
-        lr=cfg.lr, weight_decay=cfg.weight_decay,
-    )
+
+    # Split params so the pretrained DINOv2 backbone trains at a much lower LR
+    # than the freshly-initialized heads. With a frozen encoder the backbone
+    # group is empty and this collapses to a single-group AdamW (no behavior
+    # change vs the frozen baseline).
+    backbone_params, head_params = [], []
+    for name, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        (backbone_params if name.startswith("encoder.backbone") else head_params).append(p)
+    backbone_lr = cfg.get("backbone_lr", cfg.lr)
+    param_groups = [{"params": head_params, "lr": cfg.lr}]
+    if backbone_params:
+        param_groups.append({"params": backbone_params, "lr": backbone_lr})
+        nb = sum(p.numel() for p in backbone_params) / 1e6
+        print(f"finetuning backbone: {nb:.1f}M params @ lr={backbone_lr} (heads @ lr={cfg.lr})")
+    opt = torch.optim.AdamW(param_groups, lr=cfg.lr, weight_decay=cfg.weight_decay)
 
     n_total = sum(p.numel() for p in model.parameters()) / 1e6
     n_train = sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6

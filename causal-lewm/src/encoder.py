@@ -62,6 +62,18 @@ class DinoV2Encoder(nn.Module):
             for p in self.backbone.parameters():
                 p.requires_grad = False
             self.backbone.eval()
+        else:
+            # End-to-end finetuning runs a full ViT backward over B*T images each
+            # step; checkpointing trades recompute for memory so batch 16-32 fits
+            # a 16 GB T4 instead of OOMing.
+            try:
+                self.backbone.gradient_checkpointing_enable(
+                    gradient_checkpointing_kwargs={"use_reentrant": False}
+                )
+            except TypeError:
+                self.backbone.gradient_checkpointing_enable()
+            except Exception as e:
+                print(f"[encoder] gradient checkpointing unavailable: {e}")
 
     def train(self, mode: bool = True):
         super().train(mode)
