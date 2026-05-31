@@ -75,6 +75,22 @@ def main(cfg: DictConfig):
     model_cfg = CausalLeWMConfig(**OmegaConf.to_container(cfg.model, resolve=True))
     model = CausalLeWM(model_cfg).to(device)
 
+    # Optional warm-start / resume: load weights into the freshly-built model.
+    # strict=False so we can load a frozen-encoder checkpoint into the
+    # finetune-encoder model (the swap only changes requires_grad, not param
+    # shapes/names) and to tolerate minor HF backbone-key drift across versions.
+    init_from = cfg.get("init_from")
+    if init_from:
+        ckpt_in = torch.load(init_from, map_location=device)
+        state = ckpt_in.get("model", ckpt_in)
+        missing, unexpected = model.load_state_dict(state, strict=False)
+        miss_real = [k for k in missing if not k.startswith("encoder.backbone")]
+        if miss_real:
+            print(f"init_from missing (non-backbone): {miss_real[:5]} ...")
+        if unexpected:
+            print(f"init_from unexpected: {unexpected[:5]} ...")
+        print(f"loaded init weights from {init_from} (strict=False)")
+
     # Split params so the pretrained DINOv2 backbone trains at a much lower LR
     # than the freshly-initialized heads. With a frozen encoder the backbone
     # group is empty and this collapses to a single-group AdamW (no behavior

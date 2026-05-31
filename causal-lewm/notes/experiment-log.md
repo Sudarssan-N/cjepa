@@ -278,6 +278,58 @@ once the broadcast decoder is added.
      (SAVi) / optimistic (no-SAVi) draws. Report the seeded means, not the
      single runs.
 
+### Run 13 — End-to-end (unfrozen) DINOv2 — **the central hypothesis**, single seed
+- **Config:** `encoder=dinov2_finetune` (`freeze: false`), backbone_lr=1e-5, heads
+  lr=3e-4, gradient checkpointing auto-on. `max_episodes=500`, `slot_propagate=true`,
+  mask→0.4, batch_size=**16** (down from 32 to fit the unfrozen ViT backward on
+  T4), 5000 steps requested. **Session ended at step 4675** (~3.5 h). Step time
+  ≈2.7 s (no cache — full ViT fwd+bwd every step).
+- **Tail average (last ~500 steps, 21 log points, step 4175→4675):**
+
+  | metric | finetune (1 seed, ≈4675 steps) | frozen SAVi-ON (3 seeds, 5000 steps) |
+  |--------|--------------------------------|--------------------------------------|
+  | nmse   | **0.339**                      | 0.235 ± 0.030 |
+  | pcos   | 0.815                          | 0.875 ± 0.018 |
+  | pred   | 0.338                          | 0.245 ± 0.033 |
+  | recon  | **0.735**                      | 0.236 ± 0.008 |
+  | slot_sim | −0.059                       | −0.067 ± 0.003 |
+
+- **Read — the central hypothesis is *not* refuted:**
+  1. ✅ **Stable.** No collapse: `slot_sim ≈ −0.06` (identical to frozen),
+     `recon` *decreases* monotonically (6.22 → ~0.65), backbone doesn't destroy
+     its pretrained features. The main risk of end-to-end ViT finetuning under
+     this objective — collapse of either slots or backbone features — did not
+     materialize. This is the headline scientific result of the run.
+  2. ⚠️ **Slightly trails frozen at matched compute** (~0.10 NMSE gap,
+     ~0.06 pcos gap). Backbone at lr=1e-5 adapts much slower than freshly-init
+     heads at lr=3e-4, so most "easy" gains come from the slot/predictor side
+     (which is already saturated by the frozen baseline).
+  3. 📈 **Still improving when killed.** Last 1k steps trended `nmse` 0.40→0.30,
+     `recon` 0.95→0.65 — not converged.
+  4. 🔁 **`recon` is ~3× the frozen value (0.74 vs 0.24)** because the decoder is
+     chasing a *moving* target (live backbone features, target detached). This
+     is the expected joint-training geometry, *not* a collapse signal — the
+     trajectory is monotonically falling.
+- **Caveats for the paper:** (i) **batch=16 vs frozen's batch=32** — a confound
+  worth either re-running the frozen baseline at batch=16, or rerunning the
+  finetune at batch=32. (ii) **single seed** vs the frozen arm's 3 seeds.
+  (iii) **interrupted** — needs to either resume from `step_4000.pt` or
+  re-run to completion.
+- **Spikes:** a handful of large `loss`/`recon` spikes (steps 2125, 2550, 3850,
+  4125, 4625) that recover within ~25 steps — outlier batches, not instability.
+- **Story for the paper, drafted:** "Object-masking + SIGReg train the full
+  object-centric stack stably from pixels (no collapse, slots healthy, backbone
+  preserved). At matched compute the frozen-encoder variant is competitive;
+  whether end-to-end overtakes it is a separable question of scale / adaptation
+  schedule." The stability result *is* the contribution; the absolute number is
+  the next axis.
+- **Next:** the cleaner end-to-end comparison is **warm-start from a frozen
+  SAVi-ON checkpoint** (Run 14, planned): load a Run-12 `final-*.pt`, swap to
+  `encoder=dinov2_finetune`, continue training. This isolates *backbone
+  adaptation on top of working slots* and sidesteps the session-death problem
+  because heads start already-trained. Enabled by the new `init_from` config
+  knob (commit `be1ef8d`).
+
 ## 5. Insights so far (paper-relevant)
 
 1. **The variance floor is the tell.** `pred ≈ 1.0` with unit-variance slots

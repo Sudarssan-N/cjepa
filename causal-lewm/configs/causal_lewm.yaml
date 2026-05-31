@@ -28,6 +28,11 @@ num_workers: 4
 use_dino_cache: true
 # Per-run final-metric summaries are appended here (one JSON line per run).
 results_file: results.jsonl
+# Path to a checkpoint to initialize model weights from (heads + backbone).
+# Use to (a) resume an interrupted run or (b) warm-start the unfrozen-DINOv2
+# experiment from a frozen-SAVi-ON `final.pt`. Loads with strict=False so the
+# encoder freeze/unfreeze swap is permitted. null = train from scratch.
+init_from: null
 
 # Model — keys map 1:1 to CausalLeWMConfig fields
 model:
