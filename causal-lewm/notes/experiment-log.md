@@ -330,6 +330,31 @@ once the broadcast decoder is added.
   because heads start already-trained. Enabled by the new `init_from` config
   knob (commit `be1ef8d`).
 
+### Qualitative — slot decoder masks, end-to-end checkpoint (Run 13 rerun, step 5000)
+- **Artifacts:** `notes/figures/slots_finetune_{0..3}.png` — 4 random Push-T
+  windows, per-slot alpha masks + argmax segmentation, rendered with
+  `scripts/visualize_slots.py` from the finetuned `final.pt`.
+- **What they show, consistently across all 4 windows:**
+  1. ✅ **Masks are object-shaped, not noise.** One slot forms a compact blob
+     hugging the T-block; one slot takes the background (bright everywhere
+     with a dark hole exactly at the T). The argmax segmentation separates
+     T-block from background in every frame. This is the visual counterpart
+     of "recon low + slot_sim ~0": slots carry real scene content, and neither
+     collapse mode (noise / identical) is present.
+  2. ⚠️ **Slot *identity* hops across timesteps.** The slot index owning the
+     T (and the background) changes from row to row within a window, despite
+     `slot_propagate=true`. SAVi propagation evidently stabilizes identity
+     enough to help prediction (Run 12) without making index↔object binding
+     temporally rigid in the decoder's view.
+  3. The model effectively uses ~2–3 of 7 slots per frame; inactive slots are
+     near-uniform with thin image-edge stripe artifacts. The pusher dot
+     (~1 patch at 16×16 resolution) is not clearly bound by any slot.
+- **For the paper:** point 1 is the qualitative figure supporting the
+  stability claim. Point 2 is an honest limitation/discussion item — and a
+  testable comparison: render the *frozen* SAVi-ON checkpoint (`final-2.pt`)
+  on the same windows (same default seed → identical panels) and check
+  whether identity is more stable when the backbone is frozen.
+
 ## 5. Insights so far (paper-relevant)
 
 1. **The variance floor is the tell.** `pred ≈ 1.0` with unit-variance slots
