@@ -409,6 +409,10 @@ once the broadcast decoder is added.
       Headline number established.
 - [ ] Longer training (Run 10 still improving at 5000 steps) and/or scale episodes.
 - [ ] Planning eval (CEM-MPC, `model.plan_mpc`) vs LeWM; qualitative slot masks.
+      **Harness ready:** `scripts/eval_planning.py` mirrors LeWM's protocol
+      (same env/success criterion/task sampling/CEM budget) with a slot-space
+      cost policy; smoke-tested locally end-to-end on a fake dataset with the
+      Run-12 seed-0 checkpoint. Awaiting a full 50-episode run in Colab.
 - [ ] End-to-end unfrozen DINOv2 (the central hypothesis).
 - [ ] Reconsider mask curriculum (0.4 may be too aggressive); frameskip sweep
       (needs cache rebuild).

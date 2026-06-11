@@ -22,10 +22,15 @@ from __future__ import annotations
 
 import argparse
 import math
+import sys
 from pathlib import Path
 
 import numpy as np
 import torch
+
+# `python scripts/visualize_slots.py` puts scripts/ (not the repo root) on
+# sys.path; add the root so `src.*` imports resolve.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import matplotlib
 
