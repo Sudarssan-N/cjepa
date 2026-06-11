@@ -1,0 +1,1 @@
+{"seed": 0, "slot_propagate": true, "max_episodes": 500, "mask_target": 0.4, "steps": 5000, "tail_steps": 500, "nmse": 0.3169, "pcos": 0.8242, "pred": 0.3249, "recon": 0.5972, "slot_sim": -0.0647, "out_dir": "outputs/2026-06-11_15-27-51"}

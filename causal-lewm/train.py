@@ -194,6 +194,7 @@ def main(cfg: DictConfig):
     summary = {k: float(np.mean([t[k] for t in tail])) for k in tail_keys} if n_tail else {}
     record = {
         "seed": int(cfg.seed),
+        "batch_size": int(cfg.batch_size),
         "slot_propagate": bool(cfg.model.slot_propagate),
         "max_episodes": cfg.data.get("max_episodes", None),
         "mask_target": float(cfg.model.mask_target),

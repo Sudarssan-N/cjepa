@@ -279,6 +279,9 @@ once the broadcast decoder is added.
      single runs.
 
 ### Run 13 — End-to-end (unfrozen) DINOv2 — **the central hypothesis**, single seed
+> ⚠️ Superseded by **Run 13b** below: this run was interrupted at 4675/5000
+> and the user reports its batch size may have accidentally been 20 (not 16).
+> Kept for the trajectory observations; cite 13b's numbers.
 - **Config:** `encoder=dinov2_finetune` (`freeze: false`), backbone_lr=1e-5, heads
   lr=3e-4, gradient checkpointing auto-on. `max_episodes=500`, `slot_propagate=true`,
   mask→0.4, batch_size=**16** (down from 32 to fit the unfrozen ViT backward on
@@ -330,10 +333,40 @@ once the broadcast decoder is added.
   because heads start already-trained. Enabled by the new `init_from` config
   knob (commit `be1ef8d`).
 
-### Qualitative — slot decoder masks, end-to-end checkpoint (Run 13 rerun, step 5000)
+### Run 13b — End-to-end DINOv2 rerun, completed  ✅ **citable end-to-end number**
+- **Config:** same as Run 13 (`encoder=dinov2_finetune`, backbone_lr=1e-5,
+  heads 3e-4, grad checkpointing, 500 ep, SAVi on, mask→0.4, seed 0) but run
+  to **completion: 5000/5000 steps**, batch_size=16 per the launch command.
+  Raw record: `notes/results-run13-finetune.jsonl`.
+- **Tail average (last 500 steps):**
+
+  | metric | end-to-end 13b (1 seed) | interrupted Run 13 | frozen SAVi-ON (3 seeds) |
+  |--------|-------------------------|--------------------|--------------------------|
+  | nmse   | **0.317**               | 0.339              | 0.235 ± 0.030 |
+  | pcos   | 0.824                   | 0.815              | 0.875 ± 0.018 |
+  | pred   | 0.325                   | 0.338              | 0.245 ± 0.033 |
+  | recon  | **0.597**               | 0.735              | 0.236 ± 0.008 |
+  | slot_sim | −0.065                | −0.059             | −0.067 ± 0.003 |
+
+- **Read:**
+  1. ✅ Confirms Run 13's headline: **end-to-end training is stable** — no
+     slot collapse (slot_sim identical to frozen), recon still falling
+     (0.735 → 0.597 tail-avg with the extra 325 steps + clean run), healthy
+     prediction. The central hypothesis stands on a *completed* run.
+  2. ⚠️ Still trails frozen at matched steps: **0.317 vs 0.235 ± 0.030**
+     (~0.08 NMSE, ~2.7σ outside the frozen band). Remaining confounds:
+     batch 16 vs 32, single seed, and the recon target is moving (live
+     backbone) so the encoder is still adapting at 5000 steps.
+  3. 📈 Trajectory suggests unconverged: recon's tail-average dropped 19%
+     just from the final ~7% of training vs the interrupted run.
+- **Next options:** longer end-to-end run (cheapest test of "just needs more
+  steps"), frozen baseline at batch 16 (kills the batch confound), or
+  warm-start from `final-2.pt` via `init_from` (isolates backbone adaptation).
+
+### Qualitative — slot decoder masks, end-to-end checkpoint (Run 13b, step 5000)
 - **Artifacts:** `notes/figures/slots_finetune_{0..3}.png` — 4 random Push-T
   windows, per-slot alpha masks + argmax segmentation, rendered with
-  `scripts/visualize_slots.py` from the finetuned `final.pt`.
+  `scripts/visualize_slots.py` from the Run-13b finetuned `final.pt`.
 - **What they show, consistently across all 4 windows:**
   1. ✅ **Masks are object-shaped, not noise.** One slot forms a compact blob
      hugging the T-block; one slot takes the background (bright everywhere
