@@ -390,6 +390,34 @@ once the broadcast decoder is added.
   on the same windows (same default seed → identical panels) and check
   whether identity is more stable when the backbone is frozen.
 
+### Qualitative — three-way comparison on the SAME 4 windows (seed-0 models)
+- **Artifacts:** `notes/figures/slots_{finetune,frozen,savioff}_{0..3}.png` —
+  finetuned end-to-end (Run 13b), frozen SAVi-ON (Run 12, `final-2.pt`),
+  frozen SAVi-OFF (Run 12, `final-5.pt`); identical windows (viz seed 0:
+  2492/4720/7854/5882), so panels are directly comparable.
+- **Observations:**
+  1. **Binding crispness ranks: finetuned > frozen-ON > OFF.** The end-to-end
+     model has the most compact, object-hugging T-block masks and the cleanest
+     argmax segmentation. Frozen SAVi-ON separates object from background too,
+     but its masks are visibly more diffuse/patchy with more partially-active
+     slots. SAVi-OFF masks are blobby, often anchored to large background
+     regions, and its segmentation degrades to speckle in some frames.
+     → **End-to-end finetuning improves object binding qualitatively**, even
+     though its NMSE (0.317) slightly trails frozen (0.235±0.030) — the two
+     metrics measure different things, worth a paper paragraph.
+  2. **Slot-identity stability is *inverted* across arms:** both SAVi-ON
+     models (finetuned + frozen) show identity hopping across timesteps,
+     while **SAVi-OFF keeps slot indices remarkably stable** across rows
+     (the same slot plays the same role in every frame). Mechanistically
+     sensible: per-frame independent encoding re-derives slots from the same
+     learned anchors each time (deterministic role assignment), whereas SAVi
+     makes slots recursive state, so roles can swap as the recursion evolves.
+  3. Yet SAVi-ON predicts 3.4× better (Run 12) — so *decoder-visible index
+     stability is not what enables prediction*; the propagated slot state
+     evidently maintains the temporal correspondence the predictor needs even
+     when the reconstruction roles shuffle. Frame this carefully (we observe
+     alpha-mask roles, not the predictive latent alignment directly).
+
 ## 5. Insights so far (paper-relevant)
 
 1. **The variance floor is the tell.** `pred ≈ 1.0` with unit-variance slots
