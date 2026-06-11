@@ -245,7 +245,17 @@ def main():
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    dataset = swm.data.HDF5Dataset(path=args.data)
+    # Accept the compressed download directly (.h5.zst), or an .h5 path whose
+    # .zst sibling exists — same auto-decompress behavior as src.data.PushTHDF5.
+    from src.data import _decompress_zst
+
+    data_path = Path(args.data)
+    if data_path.suffix == ".zst":
+        data_path = _decompress_zst(data_path)
+    elif not data_path.exists() and data_path.with_suffix(data_path.suffix + ".zst").exists():
+        data_path = _decompress_zst(data_path.with_suffix(data_path.suffix + ".zst"))
+
+    dataset = swm.data.HDF5Dataset(path=str(data_path))
     episodes_idx, start_steps = sample_tasks(
         dataset, args.num_eval, args.goal_offset, args.seed
     )
