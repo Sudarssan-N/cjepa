@@ -38,7 +38,13 @@ from src.model import CausalLeWM, CausalLeWMConfig  # noqa: E402
 
 def load_model(ckpt_path: Path, device: str):
     ckpt = torch.load(ckpt_path, map_location=device)
-    model_cfg = ckpt["cfg"]["model"]
+    # Checkpoints saved before the resolve=True fix carry unresolved Hydra
+    # interpolations (e.g. encoder_name="${encoder.name}"). Re-resolve them
+    # against the full saved cfg, which still has the encoder/data sections.
+    from omegaconf import OmegaConf
+
+    full = OmegaConf.create(ckpt["cfg"])
+    model_cfg = OmegaConf.to_container(full.model, resolve=True)
     cfg = CausalLeWMConfig(**model_cfg)
     model = CausalLeWM(cfg).to(device)
     # strict=False: the frozen DINOv2 backbone is reloaded from HF inside the

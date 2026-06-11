@@ -180,12 +180,12 @@ def main(cfg: DictConfig):
 
             if cfg.save_every and step > 0 and step % cfg.save_every == 0:
                 ckpt = out_dir / f"step_{step}.pt"
-                torch.save({"model": model.state_dict(), "step": step, "cfg": OmegaConf.to_container(cfg)}, ckpt)
+                torch.save({"model": model.state_dict(), "step": step, "cfg": OmegaConf.to_container(cfg, resolve=True)}, ckpt)
 
             step += 1
 
     final = out_dir / "final.pt"
-    torch.save({"model": model.state_dict(), "step": step, "cfg": OmegaConf.to_container(cfg)}, final)
+    torch.save({"model": model.state_dict(), "step": step, "cfg": OmegaConf.to_container(cfg, resolve=True)}, final)
     print(f"saved final checkpoint -> {final}")
 
     # Tail-averaged run summary -> one JSON line appended to results_file, so a
