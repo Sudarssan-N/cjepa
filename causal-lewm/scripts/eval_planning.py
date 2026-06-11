@@ -46,6 +46,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import stable_worldmodel as swm  # noqa: E402
 from stable_worldmodel.policy import BasePolicy, RandomPolicy  # noqa: E402
 
+# swm re-exports HDF5Dataset only when its optional dep `hdf5plugin` is
+# installed (a bare `except ImportError: pass` hides the failure otherwise).
+if not hasattr(swm.data, "HDF5Dataset"):
+    sys.exit(
+        "stable_worldmodel.data.HDF5Dataset is unavailable — the optional "
+        "dependency 'hdf5plugin' is missing.\nFix:  pip install hdf5plugin"
+    )
+
 
 def load_model(ckpt_path: Path, device: str):
     from omegaconf import OmegaConf
