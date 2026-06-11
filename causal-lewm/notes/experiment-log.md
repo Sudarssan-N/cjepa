@@ -258,6 +258,8 @@ once the broadcast decoder is added.
   | **ON**  | **0.235 ± 0.030** | 0.875 ± 0.018 | 0.245 ± 0.033 | 0.236 ± 0.008 | −0.067 ± 0.003 |
 
   Per-seed NMSE — OFF: {0.809, 0.775, 0.788}; ON: {0.256, 0.255, 0.193}.
+- **Checkpoint files (local `6runs O:P/`, verified against each ckpt's cfg):**
+  final-2/3/4.pt = SAVi ON seeds 0/1/2; final-5/6/7.pt = SAVi OFF seeds 0/1/2.
 - **Read:** ✅✅ The SAVi effect is **large and unambiguous**: NMSE **0.79 → 0.235**
   (3.4×; ~21% → ~77% of slot variance explained), pcos 0.45 → 0.88. The
   per-arm std (±0.014–0.030) is tiny next to the 0.55 gap — **no seed overlap**,
