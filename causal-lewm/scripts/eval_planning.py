@@ -114,12 +114,14 @@ class SlotMPCPolicy(BasePolicy):
         self.hist_window = (history_frames - 1) * history_stride + 1
         self._buf: list[deque] | None = None
         self._fhist: list[deque] | None = None
+        self._step = 0
 
     def set_env(self, env) -> None:
         self.env = env
         n = getattr(env, "num_envs", 1)
         self._buf = [deque(maxlen=self.receding * self.action_block) for _ in range(n)]
         self._fhist = [deque(maxlen=self.hist_window) for _ in range(n)]
+        self._step = 0
 
     def _to_frames(self, pix: np.ndarray) -> torch.Tensor:
         """uint8 (b, T, H, W, C) -> float (b, T, C, h, h) in [0,1] at model size."""
@@ -171,10 +173,19 @@ class SlotMPCPolicy(BasePolicy):
 
         replan = [i for i in range(n) if len(self._buf[i]) == 0 and not dead[i]]
         if replan:
+            n_chunks = (len(replan) + self.env_chunk - 1) // self.env_chunk
+            print(
+                f"[mpc] env-step {self._step}: replanning {len(replan)} envs in "
+                f"{n_chunks} chunks (CEM {self.n_samples}x{self.n_iters}, "
+                f"horizon {self.horizon}); {int(dead.sum())}/{n} envs done",
+                flush=True,
+            )
+            t_plan = time.time()
             frames = self._history(replan)
             goals = self._goal(info_dict, replan)
             plans = []
             for c in range(0, len(replan), self.env_chunk):
+                t_chunk = time.time()
                 f = frames[c : c + self.env_chunk].to(self.device)
                 g = goals[c : c + self.env_chunk].to(self.device)
                 mu = self.model.plan_mpc(
@@ -187,6 +198,12 @@ class SlotMPCPolicy(BasePolicy):
                     elite_frac=self.elite_frac,
                 )  # (b, horizon, 2) in [-1, 1]
                 plans.append(mu.cpu())
+                print(
+                    f"  chunk {c // self.env_chunk + 1}/{n_chunks} "
+                    f"({f.shape[0]} envs): {time.time() - t_chunk:.1f}s",
+                    flush=True,
+                )
+            print(f"[mpc] replan finished in {time.time() - t_plan:.0f}s", flush=True)
             plan = torch.cat(plans)[:, : self.receding]  # (b, receding, 2)
             # one model step = the same action held for action_block env steps
             plan = plan.repeat_interleave(self.action_block, dim=1)
@@ -197,6 +214,7 @@ class SlotMPCPolicy(BasePolicy):
         for i in range(n):
             if not dead[i] and self._buf[i]:
                 act[i] = self._buf[i].popleft().numpy()
+        self._step += 1
         return act
 
 
