@@ -529,6 +529,10 @@ once the broadcast decoder is added.
 | `3ed10d5` | normalized prediction metrics (pred_nmse, pred_cos) |
 | `d9e7970` | SAVi-style temporal slot propagation, `slot_propagate` |
 
+_Paper: `paper/causal_lewm.tex` updated 2026-06-12 with everything through
+Run 13b + the three-way qualitative comparison + planning protocol/random
+baseline (2.0%). Remaining paper slot: §5.6 trained-variant success rates._
+
 _Last updated: through Run 12 (3-seed SAVi ablation). **Headline:** SAVi
 temporal slot propagation cuts NMSE **0.790±0.014 (off) → 0.235±0.030 (on)** at
 fixed mask=0.4 (no seed overlap), collapse solved in both arms, recon unchanged
