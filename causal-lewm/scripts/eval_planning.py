@@ -218,6 +218,56 @@ class SlotMPCPolicy(BasePolicy):
         return act
 
 
+class ExpertReplayPolicy(BasePolicy):
+    """Oracle: replay the dataset's own native per-step actions.
+
+    For env i (task = episode episodes_idx[i], start start_steps[i]) this plays
+    the recorded action at global index offsets[ep]+start+t at env step t — i.e.
+    the exact action sequence that produced the goal state (which is the dataset
+    state goal_offset steps after the start). If this does NOT reach the goal,
+    the harness/success-criterion/goal-injection is broken; if it DOES, the env
+    + criterion are sound and any failure of --policy ours is the model/planner.
+    One action per env step (no action_block repeat) — native cadence.
+    """
+
+    def __init__(self, dataset, episodes_idx, start_steps):
+        super().__init__()
+        self.type = "expert"
+        self.actions = np.asarray(dataset.get_col_data("action"), dtype=np.float32)
+        offsets = np.asarray(dataset.offsets)
+        lengths = np.asarray(dataset.lengths)
+        self.base = np.array(
+            [offsets[e] + s for e, s in zip(episodes_idx, start_steps)], dtype=np.int64
+        )
+        # last valid global action index within each task's episode
+        self.last = np.array(
+            [offsets[e] + lengths[e] - 1 for e in episodes_idx], dtype=np.int64
+        )
+        self._t: np.ndarray | None = None
+
+    def set_env(self, env) -> None:
+        self.env = env
+        self._t = np.zeros(env.num_envs, dtype=np.int64)
+
+    def get_action(self, info_dict: dict, **kwargs) -> np.ndarray:
+        n = self.env.num_envs
+        nf = info_dict.get("_needs_flush")
+        if nf is not None:
+            self._t[np.asarray(nf, dtype=bool)] = 0
+        term = info_dict.get("terminated")
+        dead = (
+            np.asarray(term, dtype=bool).ravel()[:n]
+            if term is not None
+            else np.zeros(n, bool)
+        )
+
+        gidx = np.minimum(self.base + self._t, self.last)
+        act = self.actions[gidx].astype(np.float32)
+        act[dead] = np.nan
+        self._t[~dead] += 1
+        return act
+
+
 def sample_tasks(dataset, num_eval: int, goal_offset: int, seed: int):
     """(episode, start) pairs uniform over all valid dataset starts."""
     lengths = np.asarray(dataset.lengths)
@@ -239,7 +289,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ckpt", type=Path, default=None, help="required for --policy ours")
     ap.add_argument("--data", required=True, help="path to pusht_expert_train.h5")
-    ap.add_argument("--policy", choices=["ours", "random"], default="ours")
+    ap.add_argument("--policy", choices=["ours", "random", "expert"], default="ours")
     ap.add_argument("--num-eval", type=int, default=50)
     ap.add_argument("--goal-offset", type=int, default=25)
     ap.add_argument("--budget", type=int, default=50)
@@ -257,9 +307,10 @@ def main():
     ap.add_argument("--out", type=Path, default=Path("planning_results.jsonl"))
     args = ap.parse_args()
 
-    assert args.horizon * args.action_block <= args.budget, (
-        "plan length (horizon * action_block) must fit within eval budget"
-    )
+    if args.policy == "ours":
+        assert args.horizon * args.action_block <= args.budget, (
+            "plan length (horizon * action_block) must fit within eval budget"
+        )
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     if device == "cuda":
@@ -297,7 +348,9 @@ def main():
         image_shape=(224, 224),
     )
 
-    if args.policy == "ours":
+    if args.policy == "expert":
+        policy = ExpertReplayPolicy(dataset, episodes_idx, start_steps)
+    elif args.policy == "ours":
         assert args.ckpt is not None, "--ckpt is required for --policy ours"
         model = load_model(args.ckpt, device)
         policy = SlotMPCPolicy(
