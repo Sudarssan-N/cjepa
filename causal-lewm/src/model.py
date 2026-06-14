@@ -209,11 +209,17 @@ class CausalLeWM(nn.Module):
         frames: torch.Tensor,           # (B, H_init, C, H, W) — initial history
         action_sequence: torch.Tensor,  # (B, S, T, action_dim)
         history_size: Optional[int] = None,
+        init_slots: Optional[torch.Tensor] = None,  # (B, H, N, D) — skip re-encode
     ) -> torch.Tensor:
         """Adapted from le-wm/jepa.py:rollout for slot embeddings.
 
         Returns slots: (B, S, T, N, D) with the predicted future slots
         appended after the initial history.
+
+        `init_slots` lets a caller (e.g. plan_mpc's CEM loop) encode the fixed
+        history once and reuse it, instead of re-running the encoder on the
+        same frames every call — the encoding does not depend on the sampled
+        actions, so this is a pure (often large) speedup.
         """
         cfg = self.cfg
         was_training = self.training
@@ -223,7 +229,8 @@ class CausalLeWM(nn.Module):
         HS = history_size or H
         B, S, T, _ = action_sequence.shape
 
-        init_slots, _ = self.encode_slots(frames)        # (B, H, N, D)
+        if init_slots is None:
+            init_slots, _ = self.encode_slots(frames)    # (B, H, N, D)
         slots = init_slots.unsqueeze(1).expand(B, S, H, cfg.num_slots, cfg.dim)
         slots = slots.reshape(B * S, H, cfg.num_slots, cfg.dim).clone()
         actions = action_sequence.reshape(B * S, T, -1)
@@ -273,6 +280,11 @@ class CausalLeWM(nn.Module):
 
         goal_slots = self.encode_slots(goal_frame.unsqueeze(1))[0][:, 0]    # (B, N, D)
 
+        # Encode the fixed history ONCE; the CEM loop below only varies the
+        # actions, which never re-enter the encoder. (Previously the encoder
+        # re-ran every iteration inside rollout — n_iters x wasted ViT passes.)
+        init_slots, _ = self.encode_slots(history_frames)                  # (B, H, N, D)
+
         mu = torch.zeros(B, horizon, action_dim, device=device)
         sigma = torch.full_like(mu, (action_high - action_low) / 2.0)
 
@@ -290,7 +302,9 @@ class CausalLeWM(nn.Module):
             pad = torch.zeros(B, n_samples, H, action_dim, device=device)
             full = torch.cat([pad, samples], dim=2)                       # (B, S, H+horizon, A)
 
-            slots = self.rollout(history_frames, full, history_size=H)    # (B, S, H+horizon, N, D)
+            slots = self.rollout(
+                history_frames, full, history_size=H, init_slots=init_slots
+            )  # (B, S, H+horizon, N, D)
             pred_last = slots[:, :, -1]                                   # (B, S, N, D)
             cost = (pred_last - goal_slots.unsqueeze(1)).pow(2).mean(dim=(-1, -2))  # (B, S)
 

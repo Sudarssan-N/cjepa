@@ -18,6 +18,19 @@ NUM_EVAL=${NUM_EVAL:-50}
 
 pip install -q stable-worldmodel hdf5plugin
 
+# Fail fast if there's no GPU — the "ours" CEM evals are ~100x slower on CPU
+# (tens of minutes per chunk). The random baseline is fine on CPU.
+if ! python -c "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)"; then
+  echo
+  echo "########################################################################"
+  echo "# NO GPU DETECTED. The 'ours' planning evals will be unusably slow on   #"
+  echo "# CPU. In Colab: Runtime > Change runtime type > GPU (T4), then rerun.  #"
+  echo "# (Set ALLOW_CPU=1 to run anyway — not recommended.)                    #"
+  echo "########################################################################"
+  echo
+  [ "${ALLOW_CPU:-0}" = "1" ] || exit 1
+fi
+
 # Fetch the dataset if neither the .h5 nor its .zst is present
 # (eval_planning.py auto-decompresses the .zst on first use).
 if [ ! -f "$DATA" ] && [ ! -f "$DATA.zst" ]; then

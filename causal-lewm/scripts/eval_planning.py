@@ -262,6 +262,18 @@ def main():
     )
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    if device == "cuda":
+        print(f"device: cuda ({torch.cuda.get_device_name(0)})", flush=True)
+    elif args.policy == "ours":
+        print(
+            "\n" + "=" * 70 + "\n"
+            "WARNING: no CUDA device — running CEM-MPC on CPU.\n"
+            "Each chunk re-runs the DINOv2 encoder + a 300x30 CEM search; on CPU\n"
+            "this is ~100x slower (tens of minutes PER CHUNK) and the eval will\n"
+            "effectively never finish. In Colab: Runtime > Change runtime type >\n"
+            "GPU (T4), then rerun. Continuing on CPU anyway...\n" + "=" * 70 + "\n",
+            flush=True,
+        )
 
     # Accept the compressed download directly (.h5.zst), or an .h5 path whose
     # .zst sibling exists — same auto-decompress behavior as src.data.PushTHDF5.
