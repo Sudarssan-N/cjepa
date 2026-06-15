@@ -418,6 +418,48 @@ once the broadcast decoder is added.
      when the reconstruction roles shuffle. Frame this carefully (we observe
      alpha-mask roles, not the predictive latent alignment directly).
 
+### Run 14 — Planning eval (CEM-MPC success rate) — ⚠️ **null result, reported as a negative**
+- **Protocol (LeWM-matched):** swm PushT-v1, success = block within 20 px & π/9
+  of goal; 50 episodes, seed 42, goal_offset 25, budget 50, CEM 300×30 top-10%,
+  horizon 5, action_block 5. `scripts/eval_planning.py`.
+- **Results (all at the random floor — statistically identical at n=50):**
+
+  | policy | success | /50 |
+  |--------|---------|-----|
+  | random | 2% | 1 |
+  | ours, frozen SAVi-ON (best predictor, NMSE 0.235) | **0%** | 0 (reproduced) |
+  | ours, SAVi-OFF | 2–4% | 1–2 |
+  | expert action-replay (oracle) | ≈100% | — |
+
+- **Harness is sound, model/planner is not.** Built an expert-replay oracle
+  (`--policy expert`): replays the dataset's recorded native actions; since the
+  env is deterministic given init-state + action sequence it recovers the goal
+  (smoke-tested 100% locally). So env/criterion/goal-injection are correct —
+  the floor-level learned scores are the planner+representation, not a bug.
+- **Root cause — architectural, three compounding fronts (verified by reading
+  swm PushT env + our loader):**
+  1. **Cost granularity vs tolerance:** CEM cost = slot-MSE; slots resolve a
+     16×16 patch grid, success needs 20 px / π·9 → sub-tolerance pose barely
+     moves the cost → near-flat landscape where precision matters.
+  2. **Action cadence:** PushT actions are *relative* (×100 px, PD control,
+     `relative=True`). We hold one model action across its 5 env steps; the data
+     used 5 distinct sub-actions. One held relative action = near-straight push.
+  3. **Under-determined dynamics:** training conditions one frameskip-5 action
+     on a 5-native-step transition → learned dynamics is averaged over the 4
+     unseen sub-actions: great for *predicting* the blurred outcome (good NMSE),
+     poor fine action→effect sensitivity for *control*.
+- **Two perf fixes shipped while debugging** (commits `80c5005`):
+  (a) the 2122 s/chunk the user first hit was **CPU** (script now prints device
+  + the runner aborts on CPU); (b) `plan_mpc` re-encoded the fixed history every
+  CEM iteration (30× wasted ViT passes) — hoisted via `rollout(init_slots=)`,
+  ~6.5 min/checkpoint on a T4.
+- **Paper decision (user, path A):** report as a **negative result**, framed as
+  an architectural limitation of coarse latent-MSE for high-precision control,
+  not a bug — collapse-solving is the win; this scopes the contribution as
+  representational and sets up the next research arc (pose-aware cost + per-step
+  action conditioning). Written into `paper/causal_lewm.tex` §5.6 (Table
+  `tab:planning`), abstract, limitations, future (`sec:future`), conclusion.
+
 ## 5. Insights so far (paper-relevant)
 
 1. **The variance floor is the tell.** `pred ≈ 1.0` with unit-variance slots
